@@ -401,6 +401,10 @@ def addSolverOptions(arg_parser, skip_velpart=False):
         help='The initial veloicty will be estimated as the average velocity above this height (in km). If not given, the initial velocity will be estimated using the sliding fit which can be controlled with the --velpart option.', \
         type=float)
 
+    arg_parser.add_argument('--vinitdrag', \
+        help='Estimate the initial velocity from a single-body drag and ablation fit to all points instead of a straight line over the first part, which underestimates it for a meteor that already decelerates there (e.g. a fireball first seen below 60-70 km). The straight-line velocity is kept if the fit fails or does not fit better.', \
+        action="store_true")
+
     if not skip_velpart:
         arg_parser.add_argument('-p', '--velpart', metavar='VELOCITY_PART', \
             help='Fixed part from the beginning of the meteor on which the initial velocity estimation using the sliding fit will start. Default is 0.25 (25 percent), but for noisier data this might be bumped up to 0.5.', \

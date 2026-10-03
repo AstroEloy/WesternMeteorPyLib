@@ -96,5 +96,10 @@ def loadPickle(dir_path, file_name):
         if not hasattr(p, 'v0z'):
             p.v0z = 0.0
 
+        # If the drag fit of the initial velocity is missing, add it as not used
+        if not hasattr(p, 'v_init_drag'):
+            p.v_init_drag = False
+            p.v_init_drag_fit = None
+
     return p
 
