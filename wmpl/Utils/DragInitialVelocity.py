@@ -7,9 +7,11 @@ average over that part than at its first point, so the slope underestimates the 
 point. For a fireball first seen at 45-60 km this can be hundreds of m/s, comparable to or larger than the
 deceleration in the atmosphere above the first point, and it carries into the orbit.
 
-Here the lengths of all points are fitted with dv/dt = -B rho(h) v^2 (m0/m)^(1/3) + g cos(z), where rho is the
-atmosphere density, B = Gamma A rho_m^(-2/3) m0^(-1/3) is fitted, so neither the mass nor the bulk density are
-needed, and the mass ablates as m/m0 = exp(sigma (v^2 - v0^2)/2) with sigma fitted too. The deceleration
+Here the lengths of all points are fitted with a MetSim single body, in 3D with gravity and the Coriolis
+acceleration: dv/dt = -B rho(h) v^2 (m0/m)^(1/3) plus gravity, where rho is the atmosphere density and the mass
+ablates as m/m0 = exp(sigma (v^2 - v0^2)/2). The fitted parameters are the velocity at t = 0, sigma and
+B = Gamma A rho_m^(-2/3) m0^(-1/3), so neither the mass nor the bulk density are needed: MetSim's drag only takes
+that combination, and the mass it is given follows from B. The deceleration
 measured further down, where it is large, constrains B and sigma, and with them the velocity at the first point.
 The time offsets of the stations other than the reference one are fitted again, since the solver estimates them
 with a lag model that absorbs part of the deceleration; they are only used for this fit.
@@ -25,15 +27,9 @@ import math
 import numpy as np
 import scipy.optimize
 
-from wmpl.Utils.AtmosphereDensity import atmDensPoly, fitAtmPoly
-
-
-# Integration step of the model (s). In synthetic tests the fitted velocity did not change between 2 and 0.5 ms
-DRAG_FIT_DT = 0.002
-
-# Earth's surface gravity (m/s^2) and mean radius (m), for the gravity along the path
-G0 = 9.81
-R_EARTH = 6371008.7714
+from wmpl.MetSim.BackwardAtmIntegration import backwardConstants
+from wmpl.MetSim.MetSimErosion import runSimulation
+from wmpl.Utils.AtmosphereDensity import fitAtmPoly
 
 
 class DragVelocityFit(object):
@@ -67,39 +63,33 @@ class DragVelocityFit(object):
         self.rms_linear = rms_linear
 
 
-def _integrateLengths(v0, drag_coeff, sigma, t_lo, t_hi, ht_poly, log_dens, ht_lo, ht_step):
-    """ Integrate the model from t = 0 forwards to t_hi and backwards to t_lo (RK2), and return the times and the
-        lengths from t = 0. Pure Python floats, as this runs for every residual evaluation. """
+def _metsimLengths(const, v0, drag_coeff, sigma, t_lo, t_hi, v_rotation):
+    """ Run MetSim from t = 0 forwards to t_hi, and backwards to t_lo if it is negative, and return the times and
+        the lengths along the path from t = 0 in the solver's inertial frame.
 
-    h0, h1, h2 = ht_poly
-    n_dens = len(log_dens) - 1
+    MetSim follows the motion relative to the ground, whose speed along the path differs from the inertial one by
+    the Earth's rotation, v_rotation, practically constant over the few seconds of a meteor: MetSim starts at
+    v0 - v_rotation, and v_rotation*t is added back to its lengths.
+    """
 
-    def accel(length, v):
-        ht = h0 + h1*length + h2*length**2
-        x = min(max((ht - ht_lo)/ht_step, 0.0), n_dens - 1e-9)
-        i = int(x)
-        dens = 10**(log_dens[i] + (x - i)*(log_dens[i + 1] - log_dens[i]))
-        cos_z = -(h1 + 2*h2*length)
-        g = G0*(R_EARTH/(R_EARTH + ht))**2
-        return -drag_coeff*math.exp(-sigma*(v*v - v0*v0)/6)*dens*v*v + g*cos_z
+    # MetSim's drag is gamma*shape_factor*rho^(-2/3)*m^(-1/3), so the drag coefficient sets the mass
+    const.v_init, const.sigma = v0 - v_rotation, sigma
+    const.m_init = (const.gamma*const.shape_factor*const.rho**(-2/3.0)/drag_coeff)**3
 
-    def run(t_end, dt):
-        times, lengths = [0.0], [0.0]
-        length, v = 0.0, v0
-        for _ in range(int(math.ceil(abs(t_end)/DRAG_FIT_DT)) + 1):
-            a1 = accel(length, v)
-            vm, lm = v + a1*dt/2, length + v*dt/2
-            v, length = v + accel(lm, vm)*dt, length + vm*dt
-            times.append(times[-1] + dt)
-            lengths.append(length)
-        return times, lengths
+    times, lengths = [np.zeros(1)], [np.zeros(1)]
+    for sign, t_kill in [(1, t_hi), (-1, -t_lo)]:
+        if t_kill <= 0:
+            continue
+        const.dt, const.t_kill = sign*abs(const.dt), t_kill
+        const.h_kill = 1.0 if (sign > 0) else const.h_init + 1e5
+        results = np.array(runSimulation(const)[1])
+        times.append(results[:, 0])
+        lengths.append(results[:, 18])
 
-    t_fwd, l_fwd = run(t_hi, DRAG_FIT_DT)
-    if t_lo < 0:
-        t_bwd, l_bwd = run(t_lo, -DRAG_FIT_DT)
-        return np.array(t_bwd[:0:-1] + t_fwd), np.array(l_bwd[:0:-1] + l_fwd)
+    times, lengths = np.concatenate(times), np.concatenate(lengths)
+    order = np.argsort(times)
 
-    return np.array(t_fwd), np.array(l_fwd)
+    return times[order], lengths[order] + v_rotation*times[order]
 
 
 def fitDragInitialVelocity(traj):
@@ -129,12 +119,14 @@ def fitDragInitialVelocity(traj):
     # The stations whose time offset is fitted, all but the reference one
     offset_stations = [i for i, obs in enumerate(observations) if obs.station_id != ref_id]
 
-    # Height along the straight path, with its curvature over the Earth, and the air density over the heights the
-    #   model can reach, tabulated every 100 m
-    ht_poly = np.polyfit(lengths, heights, 2)[::-1]
-    ht_lo, ht_hi, ht_step = np.min(heights) - 5000.0, np.max(heights) + 5000.0, 100.0
-    dens_co = fitAtmPoly(traj.rbeg_lat, traj.rbeg_lon, ht_lo, ht_hi, traj.jdt_ref)
-    log_dens = list(np.log10([atmDensPoly(ht, dens_co) for ht in np.arange(ht_lo, ht_hi + ht_step, ht_step)]))
+    # MetSim starts from the solver's state vector, relative to the ground, with the air density over the heights
+    #   the meteor reaches. The bulk density only scales the mass that B gives, so its value does not matter
+    ht_lo, ht_hi = np.min(heights) - 5000.0, np.max(heights) + 5000.0
+    const = backwardConstants(traj.jdt_ref, np.concatenate([traj.state_vect_mini, traj.v_init*traj.radiant_eci_mini]),
+        1.0, h_kill=ht_hi)
+    const.dens_co = fitAtmPoly(traj.rbeg_lat, traj.rbeg_lon, ht_lo, ht_hi, traj.jdt_ref)
+    const.v_kill = 100.0
+    v_rotation = traj.v_init - const.v_init
 
     v_lin, intercept_lin = traj.velocity_fit
     res_lin = lengths - (v_lin*times + intercept_lin)
@@ -146,8 +138,11 @@ def fitDragInitialVelocity(traj):
         offsets = np.zeros(len(observations))
         offsets[offset_stations] = params[-len(offset_stations):] if offset_stations else []
         t_model = times + offsets[station_index]
-        t_grid, l_grid = _integrateLengths(v0, math.exp(log_b), sigma*1e-6, min(np.min(t_model), 0.0),
-            np.max(t_model), ht_poly, log_dens, ht_lo, ht_step)
+        try:
+            t_grid, l_grid = _metsimLengths(const, v0, math.exp(log_b), sigma*1e-6, np.min(t_model), np.max(t_model),
+                v_rotation)
+        except (ValueError, OverflowError, ZeroDivisionError):
+            return np.full_like(lengths, 1e9)
         res = np.interp(t_model, t_grid, l_grid) + intercept - lengths
         return res if np.all(np.isfinite(res)) else np.full_like(res, 1e9)
 

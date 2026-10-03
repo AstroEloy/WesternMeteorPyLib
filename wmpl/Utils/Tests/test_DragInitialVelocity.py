@@ -32,12 +32,16 @@ EXAMPLE_PICKLE = "20191023_091225_trajectory.pickle"
 
 
 def _trueLength(v0, drag_coeff, sigma, h0, zenith, duration):
-    """ Length along the path against time from the first point, integrated with RK4 in 1 ms steps, with the
-        heights of the straight line over the Earth from WMPL's own coordinates. """
+    """ Inertial length along the path against time from the first point, integrated with RK4 in 1 ms steps, with
+        the heights of the straight line over the Earth from WMPL's own coordinates, and the drag and the ablation
+        on the speed relative to the air, which turns with the Earth. """
 
     p0 = np.array(geo2Cartesian(LAT0, LON0, h0, JD0))
     ra, dec = altAz2RADec(np.radians(90.0), np.pi/2 - zenith, JD0, LAT0, LON0)
     motion = -np.array(raDec2ECI(ra, dec))
+
+    # Speed of the air along the path, from the Earth's rotation
+    v_air = np.dot(np.cross([0.0, 0.0, 2*np.pi/86164.09053], p0), motion)
 
     lengths = np.arange(-2000.0, v0*duration + 2000.0, 100.0)
     heights = np.array([cartesian2Geo(JD0, *(p0 + motion*l))[2] for l in lengths])
@@ -46,7 +50,8 @@ def _trueLength(v0, drag_coeff, sigma, h0, zenith, duration):
     def accel(l, v):
         ht = np.interp(l, lengths, heights)
         cos_z = -np.interp(l, lengths, np.gradient(heights, lengths))
-        return -drag_coeff*math.exp(-sigma*(v**2 - v0**2)/6)*atmDensPoly(ht, dens_co)*v**2 \
+        u, u0 = v - v_air, v0 - v_air
+        return -drag_coeff*math.exp(-sigma*(u**2 - u0**2)/6)*atmDensPoly(ht, dens_co)*u**2 \
             + 9.81*(6371008.7714/(6371008.7714 + ht))**2*cos_z
 
     dt = 0.001
