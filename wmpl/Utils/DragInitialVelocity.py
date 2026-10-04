@@ -31,13 +31,19 @@ Neither check sees a fragmentation or a wake (below).
 
 MetSim erodes mass with the same law as it ablates it, so the erosion of the main body is absorbed by the fitted
 sigma, which is then sigma + eta; the eroded grains are not followed. On the true lengths of the main body of the
-MetSim erosion model, with 10 m of noise (20 km/s and 1 kg first seen at 70 km, 30 km/s and 0.1 kg first seen at 80
-km), erosion with eta = 0.1-0.3 s^2/km^2 from above the first point or starting 3-8 km below it, or changing from
-0.05 to 0.5 s^2/km^2 5 km below it, left the velocity within its uncertainty of that of the same meteoroid without
-erosion with the same noise in 63 of 72 fits of 1 s or all points, and within 3.1 times it in all, while the
-straight line was 35-230 m/s low. The fitted sigma was sigma + eta, e.g. 0.106 s^2/km^2 for sigma = 0.005 and eta =
-0.1 fitting all points. Over 1 s sigma is often poorly constrained, and reached its bound of 0.5 s^2/km^2 even
-without erosion, so it does not flag the problems below.
+MetSim erosion model, integrated with 0.1 ms steps, with 10 m of noise and ten noise realizations (20 km/s and 1 kg
+first seen at 70 km, 30 km/s and 0.1 kg first seen at 80 km), erosion with eta = 0.1-0.3 s^2/km^2 from above the
+first point or starting 3-8 km below it, or changing from 0.05 to 0.5 s^2/km^2 5 km below it, did not bias the
+velocity: over 170 distinct fits of 1 s or of all points, its error over its uncertainty had a mean of -0.05, and it
+differed from the error of the same meteoroid without erosion, over the same points and noise, by +0.28 of the
+uncertainty on average and by at most 3.0. Strong erosion makes the uncertainty somewhat too small: the RMS of the
+error over the uncertainty was 1.18, and 1.23 with eta = 0.3, against 1.00 without erosion over the same points,
+with 88% of the fits within 2 sigma against 94%. The fitted sigma was sigma + eta when the points cover enough of
+the deceleration, e.g. 0.105 and 0.30 s^2/km^2 for eta = 0.1 and 0.3 at 20 km/s fitting all points, but 0.18-0.23
+for 0.31 over the shorter spans at 30 km/s. Over 1 s sigma is often poorly constrained: without erosion it ended at
+one of its bounds in 9-10 of 20 fits, while the velocity uncertainty stayed calibrated (RMS of the error over it
+0.91-1.01), so sigma does not flag the problems below. All these tests use MetSim both as the truth and as the
+model: they show the fit absorbs MetSim's erosion of the body, not that a real meteoroid erodes that way.
 
 A fragmentation is not described, and the fit does not detect it: its RMS stays below the straight line's. In
 synthetic tests (20 and 30 km/s, first seen at 55 and 70 km), the main body losing 50-80% of its mass 10-20 km below
@@ -49,25 +55,29 @@ the uncertainty of the velocity had a median of 97, 33 and 9 m/s fitting 0.5 s, 
 
 The lengths must follow the body. The solver measures the centroid of the light, which with erosion includes the
 wake of the grains slowing down behind the body as they ablate. The fit takes the change of that lag for
-deceleration, and neither its uncertainty nor its RMS show it. On the luminosity-weighted centroid of the main body
-and of the grains within 1 km behind it, in the tests above and fitting 1 s, eta = 0.1 s^2/km^2 at 30 km/s moved the
-velocity by about 25 m/s (1 sigma) with grains of 1e-9 to 1e-7 kg, while the straight line was 465 m/s low, but by
-230-280 m/s with grains of 1e-7 to 1e-5 and 1e-6 to 1e-4 kg; at 20 km/s with grains of 1e-6 to 1e-4 kg the velocity
-was 400 m/s low, 21-26 times its uncertainty. With the larger grains the errors ranged from -470 to +185 m/s, of
-either sign depending on where the erosion started, and the fit was sometimes further off than the straight line.
-For a grain that keeps its speed, the lag when it is consumed goes as m^(1/3)/(sigma^2 rho_air v^4), so the wake is
-longest for large grains, thin air and slow meteors. If the meteor shows a significant wake within the point spread
-function, the fitted velocity should not be trusted; data that follow the leading fragment, as high-resolution
-tracking does, are not affected.
+deceleration, and neither its uncertainty nor its RMS show it. How large the bias is depends on how the centroid is
+measured and on the grains, so the numbers here are from one synthetic model of the measurement, and give its order
+and that it can have either sign, not the bias of a given camera: the luminosity-weighted centroid of the body and
+of all the grains within 1 km behind it, with no point spread function, saturation or detection threshold, a
+constant luminous efficiency, grain masses chosen for the test, and the same two meteoroids integrated with 0.5 ms
+steps. Fitting 1 s, eta = 0.1 s^2/km^2 at 30 km/s moved the velocity by about 25 m/s (1 sigma) from the same fit
+without erosion with grains of 1e-9 to 1e-7 kg, while the straight line was 465 m/s low, but by 230-280 m/s with
+grains of 1e-7 to 1e-5 and 1e-6 to 1e-4 kg; at 20 km/s with grains of 1e-6 to 1e-4 kg the velocity was 400 m/s low,
+21-26 times its uncertainty. With the larger grains the errors ranged from -470 to +185 m/s, of either sign
+depending on where the erosion started, and the fit was sometimes further off than the straight line. For a grain
+that keeps its speed, the lag when it is consumed goes as m^(1/3)/(sigma^2 rho_air v^4), so the wake is longest for
+large grains, thin air and slow meteors. If the meteor shows a significant wake within the point spread function,
+the fitted velocity should not be trusted; data that follow the leading fragment, as high-resolution tracking does,
+are not affected.
 
-Two checks can reveal a wake, neither reliably. Synthetic two-station events (the tests above, one station's
-centroid taking 100 m of the wake and the other's 1000 m, fits of 1 s and of all points, three noise realizations):
-fitting each station alone and comparing their velocities flagged (over 3 sigma) 15 of the 31 biased events and none
-of the 17 unbiased ones; the mass implied by B, (Gamma A rho_m^(-2/3)/B)^3 with the true Gamma A and bulk density,
-outside 0.1-10 times the true mass flagged 16 of the 31 and 2 of the 17; either, 25 of the 31. The misses were fits
-of all points 28-110 m/s off. Over 1 s, B is poorly constrained even without a wake (implied mass 0.3-8 times the
-true one), and the bulk density enters the implied mass squared, so against a photometric mass this check only flags
-gross cases.
+Two checks can reveal a wake, neither reliably. In the same model, with two stations whose centroids take 100 m and
+1000 m of the wake (a stand-in for different ranges or plate scales), fits of 1 s and of all points and three noise
+realizations: fitting each station alone and comparing their velocities flagged (over 3 sigma) 15 of the 31 biased
+events and none of the 17 unbiased ones; the mass implied by B, (Gamma A rho_m^(-2/3)/B)^3, outside 0.1-10 times the
+true mass flagged 16 of the 31 and 2 of the 17; either, 25 of the 31. The misses were fits of all points 28-110 m/s
+off. These rates are optimistic: the 0.1-10 band was chosen after seeing the fits, and the implied mass used the
+true Gamma A and bulk density, which enters it squared. Over 1 s, B is poorly constrained even without a wake
+(implied mass 0.3-8 times the true one), so against a photometric mass this check only flags gross cases.
 
 Fitting all the points of 50 synthetic meteoroids without fragmentation (15-40 km/s, B from 1.1e-3 to 2.5e-2
 m^2/kg, sigma from 0.005 to 0.05 s^2/km^2, first seen at 50 and 70 km, observed while they keep 1e-3 of their mass
