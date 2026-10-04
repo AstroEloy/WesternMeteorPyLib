@@ -17,13 +17,16 @@ or standalone (no pytest required):
 
 import argparse
 import datetime
+import multiprocessing
+import os
 
 import numpy as np
 
 from wmpl.PythonNRLMSISE00.nrlmsise_00 import gtd7
 from wmpl.PythonNRLMSISE00.nrlmsise_00_header import nrlmsise_input, nrlmsise_flags, nrlmsise_output
-from wmpl.Utils.AtmosphereDensity import addAtmosphereArguments, atmDensPoly, fitAtmPoly, \
-    getAtmDensity, getAtmDensity_vect, getAtmTemperature, setAtmosphere
+from wmpl.Formats.GenericFunctions import addSolverOptions
+from wmpl.Utils.AtmosphereDensity import MSIS_JD_ENV, MSIS_VERSION_ENV, addAtmosphereArguments, atmDensPoly, \
+    fitAtmPoly, getAtmDensity, getAtmDensity_vect, getAtmTemperature, getMSISVersion, setAtmosphere
 from wmpl.Utils.TrajConversions import datetime2JD
 
 
@@ -142,6 +145,58 @@ def testAtmosphereArgumentsSelectTheModelAndTheDate():
     assert getAtmDensity(LAT, LON, 120000.0, JD_REF) == dens_msis00
 
 
+
+def _childAtmosphere(_):
+    """ The model and a density as seen by a process started by multiprocessing; the density also depends on the
+        date. """
+
+    return getMSISVersion(), getAtmDensity(LAT, LON, 85000.0, JD_REF)
+
+
+def testAProcessStartedBySpawnUsesTheChosenAtmosphere():
+    """ A process started with "spawn" (the default on macOS and Windows, used e.g. by the trajectory solver's
+        Monte Carlo runs) imports the module afresh. It used to fall back to MSIS-00 and the input data's date,
+        21% off at 85 km for MSIS 2.1 on 2024-01-01; setAtmosphere() now passes the choice on through the
+        environment. """
+
+    arg_parser = argparse.ArgumentParser()
+    addAtmosphereArguments(arg_parser)
+
+    default = _childAtmosphere(0)
+
+    try:
+        setAtmosphere(arg_parser.parse_args(['--atm', '2.1', '--atmtime', '20240101-000000']))
+        parent = _childAtmosphere(0)
+
+        with multiprocessing.get_context("spawn").Pool(1) as pool:
+            child = pool.map(_childAtmosphere, [0])[0]
+
+        assert parent == child and child[0] == "2.1" and abs(child[1]/default[1] - 1) > 0.1
+
+    finally:
+        setAtmosphere(arg_parser.parse_args([]))
+
+    # The defaults leave no date behind for later processes
+    assert os.environ[MSIS_VERSION_ENV] == "00" and MSIS_JD_ENV not in os.environ
+
+
+def testTheTrajectorySolverOptionsSelectTheAtmosphere():
+    """ The input formats of the trajectory solver take --atm and --atmtime through addSolverOptions(), and apply
+        them with setAtmosphere() after parsing. """
+
+    arg_parser = argparse.ArgumentParser()
+    addSolverOptions(arg_parser)
+
+    try:
+        setAtmosphere(arg_parser.parse_args(['--atm', '2.0']))
+        assert getMSISVersion() == "2.0"
+
+    finally:
+        setAtmosphere(arg_parser.parse_args([]))
+
+    assert getMSISVersion() == "00"
+
+
 if __name__ == "__main__":
 
     test_functions = [
@@ -149,6 +204,8 @@ if __name__ == "__main__":
         testScalarAndArrayInputsAgree,
         testFitAtmPolyReproducesTheProfile,
         testAtmosphereArgumentsSelectTheModelAndTheDate,
+        testAProcessStartedBySpawnUsesTheChosenAtmosphere,
+        testTheTrajectorySolverOptionsSelectTheAtmosphere,
     ]
 
     failed = 0
