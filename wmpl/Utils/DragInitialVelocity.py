@@ -9,17 +9,22 @@ deceleration in the atmosphere above the first point, and it carries into the or
 
 Here the lengths of all points are fitted with a MetSim single body, in 3D with gravity and the Coriolis
 acceleration: dv/dt = -B rho(h) v^2 (m0/m)^(1/3) plus gravity, where rho is the atmosphere density and the mass
-ablates as m/m0 = exp(sigma (v^2 - v0^2)/2). The fitted parameters are the velocity at t = 0, sigma and
-B = Gamma A rho_m^(-2/3) m0^(-1/3), so neither the mass nor the bulk density are needed: MetSim's drag only takes
-that combination, and the mass it is given follows from B. The deceleration
+ablates at the rate set by sigma, as m/m0 = exp(sigma (v^2 - v0^2)/2) without gravity. The fitted parameters are
+the velocity at t = 0, sigma and B = Gamma A rho_m^(-2/3) m0^(-1/3), so neither the mass nor the bulk density are
+needed: MetSim's drag only takes that combination, and the mass it is given follows from B. The deceleration
 measured further down, where it is large, constrains B and sigma, and with them the velocity at the first point.
 The time offsets of the stations other than the reference one are fitted again, since the solver estimates them
 with a lag model that absorbs part of the deceleration; they are only used for this fit.
 
-The model is a single body, so it does not describe fragmentation. The fitted velocity depends on the shape of
-the density profile with height, not on its scale, which B absorbs: in synthetic tests a 6% error in the shape
-between 40 and 60 km moved sigma by up to 65% and the velocity by up to 100 m/s. It was tested for ablation
-coefficients up to 0.05 s^2/km^2, and it inherits the errors of the solver's lengths.
+On the true lengths of 50 synthetic meteoroids (15-40 km/s, B from 1.1e-3 to 2.5e-2 m^2/kg, sigma from 0.005 to
+0.05 s^2/km^2, first seen at 50 and 70 km, observed while they keep 1e-3 of their mass and 40% of their speed,
+with NRLMSISE-00 as the atmosphere) the velocity error over its formal uncertainty had an RMS of 1.02 and stayed
+within 2.7. The model is a single body, so it does not describe fragmentation. The fitted velocity depends on the
+shape of the density profile with height, not on its scale, which B absorbs: in those cases a density 6% higher
+at 40 km than NRLMSISE-00, growing linearly from 60 km, moved the velocity by up to 42 m/s, beyond 3 times its
+uncertainty in 6 of them. The polynomial MetSim takes, fitted over the observed heights, was within 2.3% of
+NRLMSISE-00. The fit also inherits the errors of the solver's lengths: through the solver, the synthetic fireballs
+of the tests come out 19-56 m/s high, within 2.3 times their uncertainty.
 """
 
 import math
@@ -100,7 +105,8 @@ def fitDragInitialVelocity(traj, fine_dt=0.001):
         traj: [Trajectory] Solved trajectory, with time_data, state_vect_dist and model_ht of its observations.
 
     Keyword arguments:
-        fine_dt: [float] MetSim time step of the final fit (s). The starting fits use MetSim's default step.
+        fine_dt: [float] The larger of the two MetSim time steps whose fits are extrapolated to a zero step (s).
+            The starting fit uses MetSim's default step.
 
     Return:
         [DragVelocityFit] or None if the fit did not converge or does not fit better than the straight line.
@@ -135,9 +141,8 @@ def fitDragInitialVelocity(traj, fine_dt=0.001):
     res_lin = lengths - (v_lin*times + intercept_lin)
     rms_linear = np.sqrt(np.mean(res_lin**2))
 
-    def residuals(params, sigma_fixed=None):
-        v0, log_b, intercept = params[:3]
-        sigma = sigma_fixed if (sigma_fixed is not None) else params[3]
+    def residuals(params):
+        v0, log_b, intercept, sigma = params[:4]
         offsets = np.zeros(len(observations))
         offsets[offset_stations] = params[-len(offset_stations):] if offset_stations else []
         t_model = times + offsets[station_index]
@@ -151,43 +156,40 @@ def fitDragInitialVelocity(traj, fine_dt=0.001):
 
     n_off = len(offset_stations)
     # The solver's own offsets can be off by as much as it allows them, so they can be corrected as much
-    lb = [0.5*v_lin, -25.0, intercept_lin - 1e4] + [-traj.max_toffset]*n_off
-    ub = [1.5*v_lin, 3.0, intercept_lin + 1e4] + [traj.max_toffset]*n_off
-    x_scale = [100.0, 1.0, 10.0] + [1e-3]*n_off
+    lb = [0.5*v_lin, -25.0, intercept_lin - 1e4, 0.0] + [-traj.max_toffset]*n_off
+    ub = [1.5*v_lin, 3.0, intercept_lin + 1e4, 0.5] + [traj.max_toffset]*n_off
+    x_scale = [100.0, 1.0, 10.0, 0.005] + [1e-3]*n_off
     # The straight line's residuals are dominated by the deceleration, so this robust scale is loose and only
     #   downweights gross outliers
     f_scale = max(1.4826*np.median(np.abs(res_lin - np.median(res_lin))), 1.0)
 
-    def fit(p0, lower, upper, scale, sigma_fixed=None):
-        return scipy.optimize.least_squares(residuals, p0, bounds=(lower, upper), x_scale=scale, loss="soft_l1",
-            f_scale=f_scale, kwargs={"sigma_fixed": sigma_fixed})
+    def fit(p0):
+        return scipy.optimize.least_squares(residuals, p0, bounds=(lb, ub), x_scale=x_scale, loss="soft_l1",
+            f_scale=f_scale)
 
-    # Without ablation first, then with the ablation coefficient free from three starting values, keeping the
-    #   lowest cost: started at 0.05 s^2/km^2 alone, fits of meteoroids with that coefficient ended 7 km/s off
-    first = fit([v_lin, math.log(1e-3), intercept_lin] + [0.0]*n_off, lb, ub, x_scale, sigma_fixed=0.0)
-    v0, log_b, intercept = first.x[:3]
-    offsets = list(first.x[3:])
-    best = min((fit([v0, log_b, intercept, s] + offsets, lb[:3] + [0.0] + lb[3:], ub[:3] + [0.5] + ub[3:],
-        x_scale[:3] + [0.005] + x_scale[3:]) for s in (0.001, 0.01, 0.05)), key=lambda r: r.cost)
-
-    # MetSim advances the speed and the mass one after the other, to first order in the time step, which biases
-    #   the velocity of a strongly ablating meteoroid high; the final fit refines the best start with a finer step
+    # MetSim advances the speed and the mass one after the other, so its lengths are first order in the time
+    #   step, which biases the velocity of a strongly ablating meteoroid high. The fit starts with MetSim's default
+    #   step, then fits with fine_dt and half of it are extrapolated to a zero step
+    start = fit([v_lin, math.log(1e-3), intercept_lin, 0.01] + [0.0]*n_off)
     const.dt = fine_dt
-    best = fit(best.x, lb[:3] + [0.0] + lb[3:], ub[:3] + [0.5] + ub[3:], x_scale[:3] + [0.005] + x_scale[3:])
+    full = fit(start.x)
+    const.dt = fine_dt/2
+    best = fit(full.x)
+    params = np.clip(2*best.x - full.x, lb, ub)
 
     # The straight line is the model without drag, so a worse fit than it means the fit went wrong
     rms = np.sqrt(np.mean(best.fun**2))
-    if (best.status <= 0) or (not np.all(np.isfinite(best.x))) or (rms > rms_linear):
+    if (best.status <= 0) or (not np.all(np.isfinite(params))) or (rms > rms_linear):
         return None
 
     # Formal uncertainties from the Jacobian, scaled by the residual variance
-    dof = max(len(lengths) - len(best.x), 1)
+    dof = max(len(lengths) - len(params), 1)
     cov = np.linalg.pinv(best.jac.T.dot(best.jac))*np.sum(best.fun**2)/dof
     stddev = np.sqrt(np.abs(np.diag(cov)))
 
     time_offsets = {obs.station_id: 0.0 for obs in observations}
     for k, i in enumerate(offset_stations):
-        time_offsets[observations[i].station_id] = best.x[4 + k]
+        time_offsets[observations[i].station_id] = params[4 + k]
 
-    return DragVelocityFit(best.x[0], stddev[0], best.x[2], math.exp(best.x[1]), best.x[3], stddev[3],
+    return DragVelocityFit(params[0], stddev[0], params[2], math.exp(params[1]), params[3], stddev[3],
         time_offsets, rms, v_lin, rms_linear)

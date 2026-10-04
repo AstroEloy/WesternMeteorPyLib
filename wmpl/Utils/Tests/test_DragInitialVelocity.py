@@ -10,14 +10,17 @@ Run under pytest, or directly:
 """
 
 import contextlib
+import copy
 import io
 import math
 import os
+from types import SimpleNamespace
 
 import numpy as np
 
 from wmpl.Trajectory.Trajectory import Trajectory
 from wmpl.Utils.AtmosphereDensity import atmDensPoly, fitAtmPoly
+from wmpl.Utils.DragInitialVelocity import fitDragInitialVelocity
 from wmpl.Utils.Pickling import loadPickle
 from wmpl.Utils.TrajConversions import altAz2RADec, cartesian2Geo, eci2RaDec, geo2Cartesian, raDec2ECI
 
@@ -104,9 +107,9 @@ def _solve(v0, drag_coeff, sigma, h0, zenith_deg, v_init_drag, duration=2.0, see
 
 def test_drag_fit_recovers_the_initial_velocity_of_a_decelerating_fireball():
     """ A fireball first seen at 60 km at 24 km/s (B = 5.3e-3 m^2/kg, about 1 kg of a 3500 kg/m^3 sphere, sigma =
-        0.005 s^2/km^2) slows down to 11 km/s over the 2 s it is observed. The straight line over the first part
-        gives a velocity 550-610 m/s too low, while the drag fit is within 10-20 m/s of the true one, about twice
-        its uncertainty, and recovers the ablation coefficient within 6%. """
+        0.005 s^2/km^2) slows down to 11 km/s over the 2 s it is observed. Over three noise realizations, the
+        straight line over the first part gives a velocity 560-620 m/s too low, while the drag fit is within 3-19
+        m/s of the true one, at most 1.8 times its uncertainty, and recovers the ablation coefficient within 5%. """
 
     traj_line = _solve(24000.0, 5.3e-3, 0.005, 60e3, 45.0, v_init_drag=False)
     traj_drag = _solve(24000.0, 5.3e-3, 0.005, 60e3, 45.0, v_init_drag=True)
@@ -120,18 +123,51 @@ def test_drag_fit_recovers_the_initial_velocity_of_a_decelerating_fireball():
     assert fit.v_init_linear == traj_line.v_init
 
 
-def test_drag_fit_needs_its_own_time_offsets_and_several_starts():
-    """ First seen at 45 km, the solver's time offsets, which absorb part of the deceleration, would put the fitted
-        velocity 60-100 m/s too high, three times its uncertainty, if the fit did not estimate its own. With a large
-        ablation coefficient (0.05 s^2/km^2, first seen at 50 km), a fit started at that coefficient alone ends 7
-        km/s off. Both are within three times their uncertainty here. """
+def test_drag_fit_needs_its_own_time_offsets():
+    """ First seen at 45 km, the solver's time offsets absorb part of the deceleration: with them the fitted
+        velocity is 119 m/s too high, 3.7 times its uncertainty, and with its own 56 m/s, 2.3 times. """
 
-    for sigma, h0, seed in [(0.005, 45e3, 0), (0.05, 50e3, 1)]:
-        fit = _solve(24000.0, 5.3e-3, sigma, h0, 45.0, v_init_drag=True, seed=seed).v_init_drag_fit
+    traj = _solve(24000.0, 5.3e-3, 0.005, 45e3, 45.0, v_init_drag=True)
+    fit = traj.v_init_drag_fit
 
-        assert fit is not None
-        assert abs(fit.v_init - 24000.0) < 3*fit.v_init_stddev
-        assert abs(fit.sigma/sigma - 1) < 0.2
+    traj_fixed = copy.deepcopy(traj)
+    traj_fixed.max_toffset = 1e-9
+    fit_fixed = fitDragInitialVelocity(traj_fixed)
+
+    assert abs(fit.v_init - 24000.0) < 3*fit.v_init_stddev
+    assert abs(fit_fixed.v_init - 24000.0) > 3*fit_fixed.v_init_stddev
+
+
+def test_drag_fit_of_a_meteoroid_that_ablates_until_it_stops_does_not_depend_on_metsim_step():
+    """ With sigma = 0.05 s^2/km^2 the meteoroid first seen at 50 km stops within the 2 s it is observed, with a
+        millionth of its mass. Against the fit extrapolated to a zero step, fits with MetSim steps of 5, 1 and 0.5 ms
+        alone put the velocity 163, 32 and 16 m/s higher, while the extrapolations from 1 and from 0.5 ms agree
+        within 0.01 m/s. The lengths are the true ones, because the solver's radiant for synthetic observations of
+        this meteoroid came out 0.18 deg off. """
+
+    p0, motion, times, l_arr = _trueLength(24000.0, 5.3e-3, 0.05e-6, 50e3, np.radians(45.0), 2.0)
+    rng = np.random.default_rng(0)
+
+    observations = []
+    for k in range(len(STATIONS)):
+        t_obs = np.arange(0.2*k, 2.0 - 0.05, 0.04)
+        lengths = np.interp(t_obs, times, l_arr)
+        observations.append(SimpleNamespace(ignore_station=False, station_id="S{:d}".format(k), time_data=t_obs,
+            state_vect_dist=lengths + rng.normal(0, 10.0, len(t_obs)), ignore_list=np.zeros(len(t_obs), dtype=int),
+            model_ht=np.array([cartesian2Geo(JD0, *(p0 + motion*l))[2] for l in lengths])))
+
+    all_t = np.concatenate([obs.time_data for obs in observations])
+    all_l = np.concatenate([obs.state_vect_dist for obs in observations])
+    v_lin, intercept = np.polyfit(all_t[all_t < 0.5], all_l[all_t < 0.5], 1)
+    traj = SimpleNamespace(observations=observations, t_ref_station=0, jdt_ref=JD0, rbeg_lat=LAT0, rbeg_lon=LON0,
+        state_vect_mini=p0, radiant_eci_mini=-motion, v_init=v_lin, velocity_fit=[v_lin, intercept], max_toffset=1.0)
+
+    fit = fitDragInitialVelocity(traj)
+    fit_half = fitDragInitialVelocity(traj, fine_dt=0.0005)
+
+    assert abs(fit.v_init - 24000.0) < 3*fit.v_init_stddev
+    assert abs(fit.sigma/0.05 - 1) < 0.1
+    assert abs(fit.v_init - fit_half.v_init) < 0.1*fit.v_init_stddev
 
 
 def test_drag_fit_keeps_the_velocity_of_a_meteor_that_does_not_decelerate():
@@ -158,7 +194,8 @@ def test_option_is_off_by_default_and_in_old_pickles():
 
 if __name__ == "__main__":
     test_drag_fit_recovers_the_initial_velocity_of_a_decelerating_fireball()
-    test_drag_fit_needs_its_own_time_offsets_and_several_starts()
+    test_drag_fit_needs_its_own_time_offsets()
+    test_drag_fit_of_a_meteoroid_that_ablates_until_it_stops_does_not_depend_on_metsim_step()
     test_drag_fit_keeps_the_velocity_of_a_meteor_that_does_not_decelerate()
     test_option_is_off_by_default_and_in_old_pickles()
     print("All DragInitialVelocity checks passed.")
