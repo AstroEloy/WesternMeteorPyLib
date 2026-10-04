@@ -20,7 +20,7 @@ import numpy as np
 
 from wmpl.Trajectory.Trajectory import Trajectory
 from wmpl.Utils.AtmosphereDensity import atmDensPoly, fitAtmPoly
-from wmpl.Utils.DragInitialVelocity import breakupNotes, fitDragInitialVelocity
+from wmpl.Utils.DragInitialVelocity import breakupNotes, fitDragInitialVelocity, fittedTimeLimit
 from wmpl.Utils.Pickling import loadPickle
 from wmpl.Utils.TrajConversions import altAz2RADec, cartesian2Geo, eci2RaDec, geo2Cartesian, raDec2ECI
 
@@ -119,7 +119,7 @@ def test_drag_fit_recovers_the_initial_velocity_of_a_decelerating_fireball():
         coefficient within 5%. """
 
     traj_line = _solve(24000.0, 5.3e-3, 0.005, 60e3, 45.0, v_init_drag=False)
-    traj_drag = _solve(24000.0, 5.3e-3, 0.005, 60e3, 45.0, v_init_drag=True, v_init_drag_time=None)
+    traj_drag = _solve(24000.0, 5.3e-3, 0.005, 60e3, 45.0, v_init_drag=True, v_init_drag_time=np.inf)
     fit = traj_drag.v_init_drag_fit
 
     assert traj_line.v_init_drag_fit is None
@@ -134,7 +134,7 @@ def test_drag_fit_needs_its_own_time_offsets():
     """ First seen at 45 km, the solver's time offsets absorb part of the deceleration: fitting all points with
         them, the velocity is 119 m/s too high, 3.7 times its uncertainty, and with its own 56 m/s, 2.3 times. """
 
-    traj = _solve(24000.0, 5.3e-3, 0.005, 45e3, 45.0, v_init_drag=True, v_init_drag_time=None)
+    traj = _solve(24000.0, 5.3e-3, 0.005, 45e3, 45.0, v_init_drag=True, v_init_drag_time=np.inf)
     fit = traj.v_init_drag_fit
 
     traj_fixed = copy.deepcopy(traj)
@@ -154,9 +154,9 @@ def test_drag_fit_ends_before_a_fragmentation():
         return _solve(24000.0, 5.3e-3, 0.005, 60e3, 45.0, v_init_drag=True, frag_ht=45e3, frag_kept=0.2,
             **solver_kwargs).v_init_drag_fit
 
-    fit_all = fit(v_init_drag_time=None)
+    fit_all = fit(v_init_drag_time=np.inf)
     fit_time = fit()
-    fit_ht = fit(v_init_drag_time=None, v_init_drag_ht=46.0)
+    fit_ht = fit(v_init_drag_ht=46.0)
 
     assert abs(fit_all.v_init - 24000.0) > 3*fit_all.v_init_stddev
     assert fit_time.t_range[1] < 1.0 and fit_ht.ht_range[0] > 46e3
@@ -243,6 +243,28 @@ def test_drag_fit_notes_typical_fragmentation_pressures_and_erosion_energies():
     assert len(notes) == 1 and "Buccongello" in notes[0]
 
 
+def test_a_height_limit_alone_is_the_only_limit_and_both_end_at_the_first_reached():
+    """ Without limits the fit takes the first second; with only a height limit it reaches that height, here
+        40 km after 1.3 s, rather than stopping at the default second; with both it ends at whichever comes first.
+        """
+
+    def window(**kwargs):
+        fit = _solve(24000.0, 5.3e-3, 0.005, 60e3, 45.0, v_init_drag=True, **kwargs).v_init_drag_fit
+        return fit.t_range[1], fit.ht_range[0]
+
+    assert fittedTimeLimit(None, None) == 1.0 and fittedTimeLimit(None, 40e3) is None
+    assert fittedTimeLimit(np.inf, None) is None and fittedTimeLimit(0.5, 40e3) == 0.5
+
+    t_end, _ = window()
+    assert 0.9 < t_end < 1.0
+
+    t_end, ht_end = window(v_init_drag_ht=40.0)
+    assert t_end > 1.2 and 40e3 < ht_end < 41e3
+
+    t_end, ht_end = window(v_init_drag_ht=40.0, v_init_drag_time=0.5)
+    assert t_end < 0.5 and ht_end > 45e3
+
+
 def test_a_drag_fit_that_is_not_used_is_reported_with_its_reason():
     """ Asked for over the first 0.05 s, the drag fit has too few points: the solver keeps the straight line, says
         why, and the report says so; a trajectory without the option reports nothing about it. """
@@ -282,6 +304,7 @@ if __name__ == "__main__":
     test_drag_fit_keeps_the_velocity_of_a_meteor_that_does_not_decelerate()
     test_without_the_drag_fit_the_solver_warns_when_the_straight_line_is_low()
     test_drag_fit_notes_typical_fragmentation_pressures_and_erosion_energies()
+    test_a_height_limit_alone_is_the_only_limit_and_both_end_at_the_first_reached()
     test_a_drag_fit_that_is_not_used_is_reported_with_its_reason()
     test_option_is_off_by_default_and_in_old_pickles()
     print("All DragInitialVelocity checks passed.")

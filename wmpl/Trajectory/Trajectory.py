@@ -47,8 +47,8 @@ except ImportError:
 
 import wmpl
 from wmpl.Trajectory.Orbit import calcOrbit
-from wmpl.Utils.DragInitialVelocity import DEFAULT_TIME_LIMIT, LINE_BIAS_SIGMA, breakupNotes, estimateLineBias, \
-    fitDragInitialVelocity
+from wmpl.Utils.DragInitialVelocity import LINE_BIAS_SIGMA, breakupNotes, estimateLineBias, \
+    fitDragInitialVelocity, fittedTimeLimit
 from wmpl.Utils.Math import vectNorm, vectMag, meanAngle, findClosestPoints, RMSD, \
     angleBetweenSphericalCoords, angleBetweenVectors, lineFunc, normalizeAngleWrap, confidenceInterval
 from wmpl.Utils.Misc import valueFormat
@@ -2454,7 +2454,7 @@ class Trajectory(object):
         show_jacchia=False, save_results=True, gravity_correction=True, gravity_factor=1.0, \
         plot_all_spatial_residuals=False, plot_file_type='png', traj_id=None, reject_n_sigma_outliers=3, 
         mc_cores=None, fixed_times=None, mc_runs_max=None, enable_OSM_plot=False, v_init_drag=False, \
-        v_init_drag_time=DEFAULT_TIME_LIMIT, v_init_drag_ht=None):
+        v_init_drag_time=None, v_init_drag_ht=None):
         """ Init the Ceplecha trajectory solver.
 
         Arguments:
@@ -2493,7 +2493,9 @@ class Trajectory(object):
                 fitted ablation coefficient, but the points must follow the body: a significant wake of eroded
                 grains behind it shifts the measured centroids and can bias the velocity by hundreds of m/s.
             v_init_drag_time: [float] Only points within this time from the first point, in seconds, are used in
-                the drag fit, 1 s by default; None for no limit. The fit does not model fragmentation, so the
+                the drag fit. None by default, for 1 s, or for no time limit if v_init_drag_ht is given; inf for no
+                limit. With both limits, the fit ends at whichever is reached first. The fit does not model
+                fragmentation, so the
                 fitted part should end before the first one, but the longer it is the better the velocity is
                 constrained (median uncertainty 97, 33 and 9 m/s fitting 0.5 s, 1 s and all points of synthetic
                 meteoroids without fragmentation): extend it as far as the light curve shows no flare.
@@ -6693,7 +6695,7 @@ class Trajectory(object):
         #   decelerates there
         if self.v_init_drag:
             self.v_init_drag_fit, self.v_init_drag_rejection = fitDragInitialVelocity(self,
-                t_max=self.v_init_drag_time,
+                t_max=fittedTimeLimit(self.v_init_drag_time, self.v_init_drag_ht),
                 ht_min=(None if self.v_init_drag_ht is None else 1000*self.v_init_drag_ht), return_reason=True)
 
             # Keep the straight-line velocity if the fit failed or does not fit better

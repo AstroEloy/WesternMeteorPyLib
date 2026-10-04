@@ -132,8 +132,19 @@ from wmpl.MetSim.MetSimErosion import runSimulation
 from wmpl.Utils.AtmosphereDensity import atmDensPoly, fitAtmPoly, getAtmDensity
 
 
-# Default time limit of the fitted points from the reference time (s)
+# Default time limit of the fitted points from the reference time (s), when no limit is given in time or height
 DEFAULT_TIME_LIMIT = 1.0
+
+
+def fittedTimeLimit(time_limit, ht_limit):
+    """ The time limit of the drag fit given the user's limits (see Trajectory's v_init_drag_time): the given one,
+        DEFAULT_TIME_LIMIT if neither limit is given, and none (None) if only the height limit is given, so the
+        fit then reaches as far down as that height. inf also means no time limit. """
+
+    if time_limit is None:
+        return DEFAULT_TIME_LIMIT if (ht_limit is None) else None
+
+    return None if math.isinf(time_limit) else time_limit
 
 # A curvature of the lengths the straight line was fitted to that puts the velocity at the first point this many
 #   uncertainties above the straight line's is reported (see the module docstring for how it did)
