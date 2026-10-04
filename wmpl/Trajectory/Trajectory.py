@@ -47,7 +47,7 @@ except ImportError:
 
 import wmpl
 from wmpl.Trajectory.Orbit import calcOrbit
-from wmpl.Utils.DragInitialVelocity import fitDragInitialVelocity
+from wmpl.Utils.DragInitialVelocity import DEFAULT_TIME_LIMIT, fitDragInitialVelocity
 from wmpl.Utils.Math import vectNorm, vectMag, meanAngle, findClosestPoints, RMSD, \
     angleBetweenSphericalCoords, angleBetweenVectors, lineFunc, normalizeAngleWrap, confidenceInterval
 from wmpl.Utils.Misc import valueFormat
@@ -2452,7 +2452,8 @@ class Trajectory(object):
         mc_noise_std=1.0, geometric_uncert=False, filter_picks=True, calc_orbit=True, show_plots=True, \
         show_jacchia=False, save_results=True, gravity_correction=True, gravity_factor=1.0, \
         plot_all_spatial_residuals=False, plot_file_type='png', traj_id=None, reject_n_sigma_outliers=3, 
-        mc_cores=None, fixed_times=None, mc_runs_max=None, enable_OSM_plot=False, v_init_drag=False):
+        mc_cores=None, fixed_times=None, mc_runs_max=None, enable_OSM_plot=False, v_init_drag=False, \
+        v_init_drag_time=DEFAULT_TIME_LIMIT, v_init_drag_ht=None):
         """ Init the Ceplecha trajectory solver.
 
         Arguments:
@@ -2481,10 +2482,16 @@ class Trajectory(object):
                 above the given height in kilometers using data from all stations. None by default, in which
                 case the initial velocity will be estimated using the automated siliding fit.
             v_init_drag: [bool] Estimate the initial velocity from a single-body drag and ablation fit to the lengths
-                of all points instead (see wmpl.Utils.DragInitialVelocity). The straight line fitted to the first
-                part underestimates the velocity at the first point of a meteor that already decelerates there,
-                by hundreds of m/s for fireballs first seen at 45-60 km. False by default. If the fit fails or does
-                not fit better than the straight line, the straight-line velocity is kept.
+                of the points before v_init_drag_time and above v_init_drag_ht instead (see
+                wmpl.Utils.DragInitialVelocity). The straight line fitted to the first part underestimates the
+                velocity at the first point of a meteor that already decelerates there, by hundreds of m/s for
+                fireballs first seen at 45-60 km. False by default. If the fit fails or does not fit better than
+                the straight line, the straight-line velocity is kept.
+            v_init_drag_time: [float] Only points within this time from the first point, in seconds, are used in
+                the drag fit, 1 s by default; None for no limit. The fit does not model fragmentation, so the
+                fitted part should end before the first one.
+            v_init_drag_ht: [float] Only points above this height, in kilometers, are used in the drag fit. None by
+                default, for no limit.
             estimate_timing_vel: [bool/str] Try to estimate the difference in timing and velocity. True by  
                 default. A string with the list of fixed time offsets can also be given, e.g. 
                 "CA001A":0.42,"CA0005":-0.3.
@@ -2551,6 +2558,8 @@ class Trajectory(object):
         # (Optional) Estimate the initial velocity from a drag and ablation fit to all points instead (see
         #   wmpl.Utils.DragInitialVelocity), and keep the fit
         self.v_init_drag = v_init_drag
+        self.v_init_drag_time = v_init_drag_time
+        self.v_init_drag_ht = v_init_drag_ht
         self.v_init_drag_fit = None
 
         # Estimating the difference in timing between stations, and the initial velocity if this flag is True
@@ -4439,7 +4448,9 @@ class Trajectory(object):
 
         if self.v_init_drag_fit is not None:
             fit = self.v_init_drag_fit
-            out_str += "Initial velocity from the drag and ablation fit to all points:\n"
+            out_str += "Initial velocity from the drag and ablation fit to {:d} points, {:.3f} to {:.3f} s, ".format(
+                fit.n_points, fit.t_range[0], fit.t_range[1])
+            out_str += "{:.2f} to {:.2f} km:\n".format(fit.ht_range[1]/1000, fit.ht_range[0]/1000)
             out_str += "  Vinit = {:.2f} +/- {:.2f} m/s (straight line over the first part: {:.2f} m/s)\n".format(
                 fit.v_init, fit.v_init_stddev, fit.v_init_linear)
             out_str += "  sigma = {:.4f} +/- {:.4f} s^2/km^2, B = {:.4e} m^2/kg\n".format(fit.sigma, fit.sigma_stddev,
@@ -6620,10 +6631,12 @@ class Trajectory(object):
                 self.jacchia_fit = self.fitJacchiaLag(self.observations)
 
 
-        # Estimate the initial velocity from a drag and ablation fit to all points (optional), as the straight line
-        #   fitted to the first part underestimates it for a meteor that already decelerates there
+        # Estimate the initial velocity from a drag and ablation fit to the points before a time and above a height
+        #   (optional), as the straight line fitted to the first part underestimates it for a meteor that already
+        #   decelerates there
         if self.v_init_drag:
-            self.v_init_drag_fit = fitDragInitialVelocity(self)
+            self.v_init_drag_fit = fitDragInitialVelocity(self, t_max=self.v_init_drag_time,
+                ht_min=(None if self.v_init_drag_ht is None else 1000*self.v_init_drag_ht))
 
             # Keep the straight-line velocity if the fit failed or does not fit better
             if self.v_init_drag_fit is not None:

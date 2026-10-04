@@ -9,6 +9,7 @@ import pickle
 
 
 from wmpl.Utils.OSTools import mkdirP
+from wmpl.Utils.DragInitialVelocity import DEFAULT_TIME_LIMIT
 
 
 
@@ -99,6 +100,8 @@ def loadPickle(dir_path, file_name):
         # If the drag fit of the initial velocity is missing, add it as not used
         if not hasattr(p, 'v_init_drag'):
             p.v_init_drag = False
+            p.v_init_drag_time = DEFAULT_TIME_LIMIT
+            p.v_init_drag_ht = None
             p.v_init_drag_fit = None
 
     return p

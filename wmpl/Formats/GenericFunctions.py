@@ -8,6 +8,7 @@ import numpy as np
 
 from wmpl.Trajectory.Trajectory import Trajectory
 from wmpl.Trajectory.GuralTrajectory import GuralTrajectory
+from wmpl.Utils.DragInitialVelocity import DEFAULT_TIME_LIMIT
 from wmpl.Utils.GeoidHeightEGM96 import mslToWGS84Height
 from wmpl.Utils.TrajConversions import J2000_JD, jd2Date, equatorialCoordPrecession_vect, raDec2AltAz_vect, \
     jd2LST
@@ -402,8 +403,16 @@ def addSolverOptions(arg_parser, skip_velpart=False):
         type=float)
 
     arg_parser.add_argument('--vinitdrag', \
-        help='Estimate the initial velocity from a single-body drag and ablation fit to all points instead of a straight line over the first part, which underestimates it for a meteor that already decelerates there (e.g. a fireball first seen below 60-70 km). The straight-line velocity is kept if the fit fails or does not fit better.', \
+        help='Estimate the initial velocity from a single-body drag and ablation fit to the points before --vinitdragtime and above --vinitdraght instead of a straight line over the first part, which underestimates it for a meteor that already decelerates there (e.g. a fireball first seen below 60-70 km). The straight-line velocity is kept if the fit fails or does not fit better.', \
         action="store_true")
+
+    arg_parser.add_argument('--vinitdragtime', metavar='V_INIT_DRAG_TIME', \
+        help='Only points within this time from the first point (in seconds) are used in the --vinitdrag fit. The fit does not model fragmentation, so the fitted part should end before the first one. A time longer than the meteor uses all points. {:.1f} s by default.'.format(DEFAULT_TIME_LIMIT), \
+        type=float, default=DEFAULT_TIME_LIMIT)
+
+    arg_parser.add_argument('--vinitdraght', metavar='V_INIT_DRAG_HT', \
+        help='Only points above this height (in km) are used in the --vinitdrag fit. No limit by default.', \
+        type=float)
 
     if not skip_velpart:
         arg_parser.add_argument('-p', '--velpart', metavar='VELOCITY_PART', \

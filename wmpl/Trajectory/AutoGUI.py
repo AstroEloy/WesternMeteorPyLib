@@ -334,7 +334,8 @@ class FileMonitorApp(QMainWindow):
                 gravity_factor=kwargs.gfact,
                 plot_all_spatial_residuals=False, plot_file_type=kwargs.imgformat, \
                 show_plots=False, v_init_part=kwargs.velpart, v_init_ht=vinitht, \
-                v_init_drag=kwargs.vinitdrag, \
+                v_init_drag=kwargs.vinitdrag, v_init_drag_time=kwargs.vinitdragtime, \
+                v_init_drag_ht=kwargs.vinitdraght, \
                 show_jacchia=kwargs.jacchia,
                 estimate_timing_vel=(False if kwargs.notimefit is None else kwargs.notimefit), \
                 fixed_times=kwargs.fixedtimes, mc_noise_std=kwargs.mcstd)

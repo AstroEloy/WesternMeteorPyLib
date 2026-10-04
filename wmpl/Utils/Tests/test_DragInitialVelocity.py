@@ -34,11 +34,12 @@ EXAMPLE_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.pa
 EXAMPLE_PICKLE = "20191023_091225_trajectory.pickle"
 
 
-def _trueLength(v0, drag_coeff, sigma, h0, zenith, duration):
+def _trueLength(v0, drag_coeff, sigma, h0, zenith, duration, frag_ht=None, frag_kept=1.0):
     """ Inertial length along the path against time from the first point, integrated with RK4 in 1 ms steps, with
         the heights of the straight line over the Earth from WMPL's own coordinates, and the drag and the ablation
         on the speed relative to the air, which turns with the Earth. The mass follows the ablation equation, and
-        the density is fitted over the heights the meteoroid reaches, as the drag fit does. """
+        the density is fitted over the heights the meteoroid reaches, as the drag fit does. If frag_ht is given,
+        the meteoroid keeps the fraction frag_kept of its mass when it goes below that height. """
 
     p0 = np.array(geo2Cartesian(LAT0, LON0, h0, JD0))
     ra, dec = altAz2RADec(np.radians(90.0), np.pi/2 - zenith, JD0, LAT0, LON0)
@@ -73,21 +74,26 @@ def _trueLength(v0, drag_coeff, sigma, h0, zenith, duration):
             k3 = deriv(y + k2*dt/2, dens_co)
             k4 = deriv(y + k3*dt, dens_co)
             y = y + dt*(k1 + 2*k2 + 2*k3 + k4)/6
+            if (frag_ht is not None) and (np.interp(l_arr[-1], lengths, heights) >= frag_ht) \
+                    and (np.interp(y[0], lengths, heights) < frag_ht):
+                y[2] += math.log(frag_kept)
             l_arr.append(y[0])
         reached = np.array(l_arr)
 
     return p0, motion, dt*np.arange(len(l_arr)), reached
 
 
-def _solve(v0, drag_coeff, sigma, h0, zenith_deg, v_init_drag, duration=2.0, seed=0):
-    """ Solve the synthetic observations of the meteoroid with WMPL. """
+def _solve(v0, drag_coeff, sigma, h0, zenith_deg, v_init_drag, duration=2.0, seed=0, frag_ht=None, frag_kept=1.0,
+        **solver_kwargs):
+    """ Solve the synthetic observations of the meteoroid with WMPL, with the given solver options. """
 
-    p0, motion, times, l_arr = _trueLength(v0, drag_coeff, sigma*1e-6, h0, np.radians(zenith_deg), duration)
+    p0, motion, times, l_arr = _trueLength(v0, drag_coeff, sigma*1e-6, h0, np.radians(zenith_deg), duration,
+        frag_ht=frag_ht, frag_kept=frag_kept)
     rng = np.random.default_rng(seed)
     noise = np.radians(20/3600)
 
     traj = Trajectory(JD0, meastype=1, monte_carlo=False, calc_orbit=False, show_plots=False, save_results=False,
-        verbose=False, v_init_drag=v_init_drag)
+        verbose=False, v_init_drag=v_init_drag, **solver_kwargs)
 
     for k, (lat, lon) in enumerate(STATIONS):
         lat, lon = np.radians(lat), np.radians(lon)
@@ -108,11 +114,12 @@ def _solve(v0, drag_coeff, sigma, h0, zenith_deg, v_init_drag, duration=2.0, see
 def test_drag_fit_recovers_the_initial_velocity_of_a_decelerating_fireball():
     """ A fireball first seen at 60 km at 24 km/s (B = 5.3e-3 m^2/kg, about 1 kg of a 3500 kg/m^3 sphere, sigma =
         0.005 s^2/km^2) slows down to 11 km/s over the 2 s it is observed. Over three noise realizations, the
-        straight line over the first part gives a velocity 560-620 m/s too low, while the drag fit is within 3-19
-        m/s of the true one, at most 1.8 times its uncertainty, and recovers the ablation coefficient within 5%. """
+        straight line over the first part gives a velocity 560-620 m/s too low, while the drag fit to all points
+        is within 3-19 m/s of the true one, at most 1.8 times its uncertainty, and recovers the ablation
+        coefficient within 5%. """
 
     traj_line = _solve(24000.0, 5.3e-3, 0.005, 60e3, 45.0, v_init_drag=False)
-    traj_drag = _solve(24000.0, 5.3e-3, 0.005, 60e3, 45.0, v_init_drag=True)
+    traj_drag = _solve(24000.0, 5.3e-3, 0.005, 60e3, 45.0, v_init_drag=True, v_init_drag_time=None)
     fit = traj_drag.v_init_drag_fit
 
     assert traj_line.v_init_drag_fit is None
@@ -124,10 +131,10 @@ def test_drag_fit_recovers_the_initial_velocity_of_a_decelerating_fireball():
 
 
 def test_drag_fit_needs_its_own_time_offsets():
-    """ First seen at 45 km, the solver's time offsets absorb part of the deceleration: with them the fitted
-        velocity is 119 m/s too high, 3.7 times its uncertainty, and with its own 56 m/s, 2.3 times. """
+    """ First seen at 45 km, the solver's time offsets absorb part of the deceleration: fitting all points with
+        them, the velocity is 119 m/s too high, 3.7 times its uncertainty, and with its own 56 m/s, 2.3 times. """
 
-    traj = _solve(24000.0, 5.3e-3, 0.005, 45e3, 45.0, v_init_drag=True)
+    traj = _solve(24000.0, 5.3e-3, 0.005, 45e3, 45.0, v_init_drag=True, v_init_drag_time=None)
     fit = traj.v_init_drag_fit
 
     traj_fixed = copy.deepcopy(traj)
@@ -136,6 +143,25 @@ def test_drag_fit_needs_its_own_time_offsets():
 
     assert abs(fit.v_init - 24000.0) < 3*fit.v_init_stddev
     assert abs(fit_fixed.v_init - 24000.0) > 3*fit_fixed.v_init_stddev
+
+
+def test_drag_fit_ends_before_a_fragmentation():
+    """ The fireball first seen at 60 km keeps 20% of its mass at 45 km, 0.9 s later. The single-body fit to all
+        points puts its velocity 284 m/s too high, 11 times its uncertainty; fitting the default first second, or
+        the points above 46 km, gives it within its uncertainty. """
+
+    def fit(**solver_kwargs):
+        return _solve(24000.0, 5.3e-3, 0.005, 60e3, 45.0, v_init_drag=True, frag_ht=45e3, frag_kept=0.2,
+            **solver_kwargs).v_init_drag_fit
+
+    fit_all = fit(v_init_drag_time=None)
+    fit_time = fit()
+    fit_ht = fit(v_init_drag_time=None, v_init_drag_ht=46.0)
+
+    assert abs(fit_all.v_init - 24000.0) > 3*fit_all.v_init_stddev
+    assert fit_time.t_range[1] < 1.0 and fit_ht.ht_range[0] > 46e3
+    for fit_part in (fit_time, fit_ht):
+        assert abs(fit_part.v_init - 24000.0) < 3*fit_part.v_init_stddev
 
 
 def test_drag_fit_of_a_meteoroid_that_ablates_until_it_stops_does_not_depend_on_metsim_step():
@@ -195,6 +221,7 @@ def test_option_is_off_by_default_and_in_old_pickles():
 if __name__ == "__main__":
     test_drag_fit_recovers_the_initial_velocity_of_a_decelerating_fireball()
     test_drag_fit_needs_its_own_time_offsets()
+    test_drag_fit_ends_before_a_fragmentation()
     test_drag_fit_of_a_meteoroid_that_ablates_until_it_stops_does_not_depend_on_metsim_step()
     test_drag_fit_keeps_the_velocity_of_a_meteor_that_does_not_decelerate()
     test_option_is_off_by_default_and_in_old_pickles()

@@ -35,7 +35,9 @@ Run any of them with `--help` for the full list of options. The ones that matter
 | `-d`, `--disablemc` | Only compute the geometric solution, skipping the Monte Carlo step. Fast, but gives no uncertainties. |
 | `-t`, `--maxtoffset` | Maximum timing offset allowed between stations, in seconds. |
 | `-v`, `--vinitht` | Estimate the initial velocity as the average above this height, in km. |
-| `--vinitdrag` | Estimate the initial velocity from a single-body drag and ablation fit to all points, for meteors that already decelerate in their first part (e.g. fireballs first seen below 60-70 km), where the default straight-line fit underestimates it. Off by default. |
+| `--vinitdrag` | Estimate the initial velocity from a single-body drag and ablation fit to the points selected by `--vinitdragtime` and `--vinitdraght`, for meteors that already decelerate in their first part (e.g. fireballs first seen below 60-70 km), where the default straight-line fit underestimates it. Off by default. |
+| `--vinitdragtime` | Only points within this time from the first point, in seconds, are used in the `--vinitdrag` fit, 1 s by default. The fit does not model fragmentation, so the fitted part should end before the first one. |
+| `--vinitdraght` | Only points above this height, in km, are used in the `--vinitdrag` fit. No limit by default. |
 | `-l`, `--plotallspatial` | Save the full set of diagnostic plots. |
 
 To see the solver working on a synthetic example without any data of your own:

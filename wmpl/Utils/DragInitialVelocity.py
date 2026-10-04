@@ -1,5 +1,5 @@
 """ Initial velocity of a decelerating meteor from a fit of a single-body drag and ablation model to the lengths
-    along its whole trajectory.
+    along the first part of its trajectory.
 
 The trajectory solver estimates the initial velocity as the slope of a straight line fitted to the first part
 of the meteor (at least the first 25% of the points). A meteor that already decelerates there is slower on
@@ -7,24 +7,35 @@ average over that part than at its first point, so the slope underestimates the 
 point. For a fireball first seen at 45-60 km this can be hundreds of m/s, comparable to or larger than the
 deceleration in the atmosphere above the first point, and it carries into the orbit.
 
-Here the lengths of all points are fitted with a MetSim single body, in 3D with gravity and the Coriolis
-acceleration: dv/dt = -B rho(h) v^2 (m0/m)^(1/3) plus gravity, where rho is the atmosphere density and the mass
-ablates at the rate set by sigma, as m/m0 = exp(sigma (v^2 - v0^2)/2) without gravity. The fitted parameters are
-the velocity at t = 0, sigma and B = Gamma A rho_m^(-2/3) m0^(-1/3), so neither the mass nor the bulk density are
-needed: MetSim's drag only takes that combination, and the mass it is given follows from B. The deceleration
-measured further down, where it is large, constrains B and sigma, and with them the velocity at the first point.
-The time offsets of the stations other than the reference one are fitted again, since the solver estimates them
-with a lag model that absorbs part of the deceleration; they are only used for this fit.
+Here the lengths of the points within a time from the first one (1 s by default), and optionally above a height,
+are fitted with a MetSim single body, in 3D with gravity and the Coriolis acceleration:
+dv/dt = -B rho(h) v^2 (m0/m)^(1/3) plus gravity, where rho is the atmosphere density and the mass ablates at the
+rate set by sigma, as m/m0 = exp(sigma (v^2 - v0^2)/2) without gravity. The fitted parameters are the velocity at
+t = 0, sigma and B = Gamma A rho_m^(-2/3) m0^(-1/3), so neither the mass nor the bulk density are needed: MetSim's
+drag only takes that combination, and the mass it is given follows from B. The measured deceleration constrains B
+and sigma, and with them the velocity at the first point. The time offsets of the stations other than the
+reference one are fitted again, since the solver estimates them with a lag model that absorbs part of the
+deceleration; they are only used for this fit.
 
-On the true lengths of 50 synthetic meteoroids (15-40 km/s, B from 1.1e-3 to 2.5e-2 m^2/kg, sigma from 0.005 to
-0.05 s^2/km^2, first seen at 50 and 70 km, observed while they keep 1e-3 of their mass and 40% of their speed,
-with NRLMSISE-00 as the atmosphere) the velocity error over its formal uncertainty had an RMS of 1.02 and stayed
-within 2.7. The model is a single body, so it does not describe fragmentation. The fitted velocity depends on the
-shape of the density profile with height, not on its scale, which B absorbs: in those cases a density 6% higher
-at 40 km than NRLMSISE-00, growing linearly from 60 km, moved the velocity by up to 42 m/s, beyond 3 times its
-uncertainty in 6 of them. The polynomial MetSim takes, fitted over the observed heights, was within 2.3% of
-NRLMSISE-00. The fit also inherits the errors of the solver's lengths: through the solver, the synthetic fireballs
-of the tests come out 19-56 m/s high, within 2.3 times their uncertainty.
+MetSim erodes mass with the same law as it ablates it, so a constant erosion coefficient eta is absorbed by the
+fitted sigma, which is then sigma + eta; the eroded grains are not followed. Erosion that starts within the fitted
+part, or a fragmentation, is not described, and the fit does not detect it: its RMS stays below the straight
+line's. In synthetic tests (20 and 30 km/s, first seen at 55 and 70 km), the main body losing 50-80% of its mass
+10-20 km below the first point biased the velocity by 40-480 m/s, 5-29 times its uncertainty, and erosion with
+eta = 0.1-0.3 s^2/km^2 starting 10 km below by up to 110 m/s, 5 times; fitting only the points above the event,
+all were within their uncertainty. Hence the fitted part ends at a time or a height, which should be before the
+first fragmentation, e.g. from the light curve. Without fragmentation, on the true lengths of 35 synthetic
+meteoroids, the uncertainty of the velocity had a median of 97, 33 and 9 m/s fitting 0.5 s, 1 s and all points.
+
+Fitting all the points of 50 synthetic meteoroids without fragmentation (15-40 km/s, B from 1.1e-3 to 2.5e-2
+m^2/kg, sigma from 0.005 to 0.05 s^2/km^2, first seen at 50 and 70 km, observed while they keep 1e-3 of their mass
+and 40% of their speed, with NRLMSISE-00 as the atmosphere) the velocity error over its formal uncertainty had an
+RMS of 1.02 and stayed within 2.7. The fitted velocity depends on the shape of the density profile with height,
+not on its scale, which B absorbs: in those cases a density 6% higher at 40 km than NRLMSISE-00, growing linearly
+from 60 km, moved the velocity by up to 42 m/s, beyond 3 times its uncertainty in 6 of them. The polynomial MetSim
+takes, fitted over the observed heights, was within 2.3% of NRLMSISE-00. The fit also inherits the errors of the
+solver's lengths: through the solver, the synthetic fireballs of the tests come out 19-56 m/s high fitting all
+their points, within 2.3 times their uncertainty.
 """
 
 import math
@@ -37,9 +48,12 @@ from wmpl.MetSim.MetSimErosion import runSimulation
 from wmpl.Utils.AtmosphereDensity import fitAtmPoly
 
 
+# Default time limit of the fitted points from the reference time (s)
+DEFAULT_TIME_LIMIT = 1.0
+
 class DragVelocityFit(object):
     def __init__(self, v_init, v_init_stddev, intercept, drag_coeff, sigma, sigma_stddev, time_offsets, rms,
-            v_init_linear, rms_linear):
+            v_init_linear, rms_linear, n_points, ht_range, t_range):
         """ Result of fitDragInitialVelocity().
 
         Arguments:
@@ -54,6 +68,9 @@ class DragVelocityFit(object):
             rms: [float] RMS of the length residuals (m).
             v_init_linear: [float] The solver's straight-line initial velocity (m/s).
             rms_linear: [float] RMS of the length residuals of that straight line (m).
+            n_points: [int] Number of fitted points.
+            ht_range: [tuple] Lowest and highest height of the fitted points (m).
+            t_range: [tuple] Earliest and latest time of the fitted points from the reference time (s).
         """
 
         self.v_init = v_init
@@ -66,6 +83,9 @@ class DragVelocityFit(object):
         self.rms = rms
         self.v_init_linear = v_init_linear
         self.rms_linear = rms_linear
+        self.n_points = n_points
+        self.ht_range = ht_range
+        self.t_range = t_range
 
 
 def _metsimLengths(const, v0, drag_coeff, sigma, t_lo, t_hi, v_rotation):
@@ -97,36 +117,50 @@ def _metsimLengths(const, v0, drag_coeff, sigma, t_lo, t_hi, v_rotation):
     return times[order], lengths[order] + v_rotation*times[order]
 
 
-def fitDragInitialVelocity(traj, fine_dt=0.001):
-    """ Fit the single-body drag and ablation model to the lengths of all non-ignored points of a solved
-        trajectory (see the module docstring).
+def fitDragInitialVelocity(traj, ht_min=None, t_max=None, fine_dt=0.001):
+    """ Fit the single-body drag and ablation model to the lengths of the non-ignored points of a solved
+        trajectory above a height and before a time (see the module docstring).
 
     Arguments:
         traj: [Trajectory] Solved trajectory, with time_data, state_vect_dist and model_ht of its observations.
 
     Keyword arguments:
+        ht_min: [float] Only points above this height are fitted (m). None by default, for no limit.
+        t_max: [float] Only points before this time from the reference time, the first point in a solved
+            trajectory, are fitted (s). None by default, for no limit.
         fine_dt: [float] The larger of the two MetSim time steps whose fits are extrapolated to a zero step (s).
             The starting fit uses MetSim's default step.
 
     Return:
-        [DragVelocityFit] or None if the fit did not converge or does not fit better than the straight line.
+        [DragVelocityFit] or None if there are not more points than parameters, or the fit did not converge or
+            does not fit better than the straight line.
     """
 
-    observations = [obs for obs in traj.observations if not obs.ignore_station]
     ref_id = traj.observations[traj.t_ref_station].station_id
 
-    times, lengths, heights, station_index = [], [], [], []
-    for i, obs in enumerate(observations):
-        good = obs.ignore_list == 0
+    observations, times, lengths, heights, station_index = [], [], [], [], []
+    for obs in traj.observations:
+        good = (obs.ignore_list == 0) & (obs.model_ht > (-np.inf if ht_min is None else ht_min)) \
+            & (obs.time_data < (np.inf if t_max is None else t_max))
+        if obs.ignore_station or (not np.any(good)):
+            continue
+        station_index.append(np.full(np.count_nonzero(good), len(observations)))
+        observations.append(obs)
         times.append(obs.time_data[good])
         lengths.append(obs.state_vect_dist[good])
         heights.append(obs.model_ht[good])
-        station_index.append(np.full(np.count_nonzero(good), i))
+    if not observations:
+        return None
     times, lengths, heights = np.concatenate(times), np.concatenate(lengths), np.concatenate(heights)
     station_index = np.concatenate(station_index)
 
-    # The stations whose time offset is fitted, all but the reference one
+    # The stations whose time offset is fitted, all but the reference one, or but the first one if the reference
+    #   station has no points in the fitted part, since a common offset is the intercept
     offset_stations = [i for i, obs in enumerate(observations) if obs.station_id != ref_id]
+    if len(offset_stations) == len(observations):
+        offset_stations = offset_stations[1:]
+    if len(times) <= 4 + len(offset_stations):
+        return None
 
     # MetSim starts from the solver's state vector, relative to the ground, with the air density over the heights
     #   the meteor reaches. The bulk density only scales the mass that B gives, so its value does not matter
@@ -192,4 +226,5 @@ def fitDragInitialVelocity(traj, fine_dt=0.001):
         time_offsets[observations[i].station_id] = params[4 + k]
 
     return DragVelocityFit(params[0], stddev[0], params[2], math.exp(params[1]), params[3], stddev[3],
-        time_offsets, rms, v_lin, rms_linear)
+        time_offsets, rms, v_lin, rms_linear, len(times), (np.min(heights), np.max(heights)),
+        (np.min(times), np.max(times)))
