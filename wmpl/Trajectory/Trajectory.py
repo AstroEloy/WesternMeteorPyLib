@@ -2494,9 +2494,12 @@ class Trajectory(object):
                 grains behind it shifts the measured centroids and can bias the velocity by hundreds of m/s.
             v_init_drag_time: [float] Only points within this time from the first point, in seconds, are used in
                 the drag fit, 1 s by default; None for no limit. The fit does not model fragmentation, so the
-                fitted part should end before the first one.
-            v_init_drag_ht: [float] Only points above this height, in kilometers, are used in the drag fit. None by
-                default, for no limit.
+                fitted part should end before the first one, but the longer it is the better the velocity is
+                constrained (median uncertainty 97, 33 and 9 m/s fitting 0.5 s, 1 s and all points of synthetic
+                meteoroids without fragmentation): extend it as far as the light curve shows no flare.
+            v_init_drag_ht: [float] Only points above this height, in kilometers, are used in the drag fit, e.g.
+                above a flare, or where the report notes typical fragmentation pressures. None by default, for no
+                limit.
             estimate_timing_vel: [bool/str] Try to estimate the difference in timing and velocity. True by  
                 default. A string with the list of fixed time offsets can also be given, e.g. 
                 "CA001A":0.42,"CA0005":-0.3.

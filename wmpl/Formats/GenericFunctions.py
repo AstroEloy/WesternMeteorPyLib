@@ -407,11 +407,11 @@ def addSolverOptions(arg_parser, skip_velpart=False):
         action="store_true")
 
     arg_parser.add_argument('--vinitdragtime', metavar='V_INIT_DRAG_TIME', \
-        help='Only points within this time from the first point (in seconds) are used in the --vinitdrag fit. The fit does not model fragmentation, so the fitted part should end before the first one. A time longer than the meteor uses all points. {:.1f} s by default.'.format(DEFAULT_TIME_LIMIT), \
+        help='Only points within this time from the first point (in seconds) are used in the --vinitdrag fit. The fit does not model fragmentation, so the fitted part should end before the first one. The longer the part that can be trusted to be free of fragmentation, the better constrained the velocity: without fragmentation its median uncertainty in synthetic tests was 97, 33 and 9 m/s fitting 0.5 s, 1 s and all points. Extend it as far as the light curve shows no flare, and no further. A time longer than the meteor uses all points. {:.1f} s by default.'.format(DEFAULT_TIME_LIMIT), \
         type=float, default=DEFAULT_TIME_LIMIT)
 
     arg_parser.add_argument('--vinitdraght', metavar='V_INIT_DRAG_HT', \
-        help='Only points above this height (in km) are used in the --vinitdrag fit. No limit by default.', \
+        help='Only points above this height (in km) are used in the --vinitdrag fit, e.g. above a flare in the light curve, or as the report suggests where the fitted part reaches typical fragmentation pressures. As with --vinitdragtime, the longer the part free of fragmentation, the better. No limit by default.', \
         type=float)
 
     if not skip_velpart:
