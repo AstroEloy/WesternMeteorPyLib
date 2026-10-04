@@ -34,7 +34,8 @@ EXAMPLE_PICKLE = "20191023_091225_trajectory.pickle"
 def _trueLength(v0, drag_coeff, sigma, h0, zenith, duration):
     """ Inertial length along the path against time from the first point, integrated with RK4 in 1 ms steps, with
         the heights of the straight line over the Earth from WMPL's own coordinates, and the drag and the ablation
-        on the speed relative to the air, which turns with the Earth. """
+        on the speed relative to the air, which turns with the Earth. The mass follows the ablation equation, and
+        the density is fitted over the heights the meteoroid reaches, as the drag fit does. """
 
     p0 = np.array(geo2Cartesian(LAT0, LON0, h0, JD0))
     ra, dec = altAz2RADec(np.radians(90.0), np.pi/2 - zenith, JD0, LAT0, LON0)
@@ -45,28 +46,34 @@ def _trueLength(v0, drag_coeff, sigma, h0, zenith, duration):
 
     lengths = np.arange(-2000.0, v0*duration + 2000.0, 100.0)
     heights = np.array([cartesian2Geo(JD0, *(p0 + motion*l))[2] for l in lengths])
-    dens_co = fitAtmPoly(LAT0, LON0, np.min(heights) - 5000, np.max(heights) + 5000, JD0)
+    cos_z = -np.gradient(heights, lengths)
 
-    def accel(l, v):
+    def deriv(y, dens_co):
+        l, v, log_m = y
         ht = np.interp(l, lengths, heights)
-        cos_z = -np.interp(l, lengths, np.gradient(heights, lengths))
-        u, u0 = v - v_air, v0 - v_air
-        return -drag_coeff*math.exp(-sigma*(u**2 - u0**2)/6)*atmDensPoly(ht, dens_co)*u**2 \
-            + 9.81*(6371008.7714/(6371008.7714 + ht))**2*cos_z
+        u = v - v_air
+        drag = drag_coeff*math.exp(-log_m/3)*atmDensPoly(ht, dens_co)*u**2
+        return np.array([v, -drag + 9.81*(6371008.7714/(6371008.7714 + ht))**2*np.interp(l, lengths, cos_z),
+            -sigma*u*drag])
 
-    dt = 0.001
-    times, l_arr = [0.0], [0.0]
-    l, v = 0.0, v0
-    while times[-1] < duration:
-        k1l, k1v = v, accel(l, v)
-        k2l, k2v = v + k1v*dt/2, accel(l + k1l*dt/2, v + k1v*dt/2)
-        k3l, k3v = v + k2v*dt/2, accel(l + k2l*dt/2, v + k2v*dt/2)
-        k4l, k4v = v + k3v*dt, accel(l + k3l*dt, v + k3v*dt)
-        l, v = l + dt*(k1l + 2*k2l + 2*k3l + k4l)/6, v + dt*(k1v + 2*k2v + 2*k3v + k4v)/6
-        times.append(times[-1] + dt)
-        l_arr.append(l)
+    # Integrated twice: the heights reached by the first integration set the density of the second
+    reached = lengths
+    for _ in range(2):
+        ht_reached = np.interp(reached, lengths, heights)
+        dens_co = fitAtmPoly(LAT0, LON0, np.min(ht_reached) - 5000, np.max(ht_reached) + 5000, JD0)
+        dt = 0.001
+        y = np.array([0.0, v0, 0.0])
+        l_arr = [0.0]
+        for _ in range(int(round(duration/dt))):
+            k1 = deriv(y, dens_co)
+            k2 = deriv(y + k1*dt/2, dens_co)
+            k3 = deriv(y + k2*dt/2, dens_co)
+            k4 = deriv(y + k3*dt, dens_co)
+            y = y + dt*(k1 + 2*k2 + 2*k3 + k4)/6
+            l_arr.append(y[0])
+        reached = np.array(l_arr)
 
-    return p0, motion, np.array(times), np.array(l_arr)
+    return p0, motion, dt*np.arange(len(l_arr)), reached
 
 
 def _solve(v0, drag_coeff, sigma, h0, zenith_deg, v_init_drag, duration=2.0, seed=0):
