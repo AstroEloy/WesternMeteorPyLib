@@ -20,7 +20,7 @@ import numpy as np
 
 from wmpl.Trajectory.Trajectory import Trajectory
 from wmpl.Utils.AtmosphereDensity import atmDensPoly, fitAtmPoly
-from wmpl.Utils.DragInitialVelocity import fitDragInitialVelocity
+from wmpl.Utils.DragInitialVelocity import breakupNotes, fitDragInitialVelocity
 from wmpl.Utils.Pickling import loadPickle
 from wmpl.Utils.TrajConversions import altAz2RADec, cartesian2Geo, eci2RaDec, geo2Cartesian, raDec2ECI
 
@@ -225,6 +225,24 @@ def test_without_the_drag_fit_the_solver_warns_when_the_straight_line_is_low():
     assert bias is not None and not bias.significant
 
 
+def test_drag_fit_notes_typical_fragmentation_pressures_and_erosion_energies():
+    """ Along the fitted model, the fireball at 24 km/s first seen at 75 km goes from 0.019 to 0.21 MPa and crosses
+        0.04 MPa, where ordinary chondritic fireballs start fragmenting, at 70 km, which the note gives as the
+        height to fit above; the meteor at 30 km/s first seen at 115 km receives 0.2-6.7 MJ/m^2, across the
+        energy at which shower meteoroids start eroding. A note is only given for what the fitted part crosses. """
+
+    fit = _solve(24000.0, 5.3e-3, 0.005, 75e3, 45.0, v_init_drag=True).v_init_drag_fit
+    notes = breakupNotes(fit)
+    assert 0.01e6 < fit.dyn_pressure_range[0] < 0.04e6 < 0.12e6 < fit.dyn_pressure_range[1] < 0.5e6
+    assert 68e3 < fit.first_fragmentation_ht < 72e3 and fit.energy_range[0] > 2e6
+    assert len(notes) == 1 and "--vinitdraght {:.1f}".format(fit.first_fragmentation_ht/1000) in notes[0]
+
+    fit = _solve(30000.0, 1e-6, 0.005, 115e3, 45.0, v_init_drag=True).v_init_drag_fit
+    notes = breakupNotes(fit)
+    assert fit.energy_range[0] < 1e6 and fit.energy_range[1] > 2e6 and fit.dyn_pressure_range[1] < 0.04e6
+    assert len(notes) == 1 and "Buccongello" in notes[0]
+
+
 def test_a_drag_fit_that_is_not_used_is_reported_with_its_reason():
     """ Asked for over the first 0.05 s, the drag fit has too few points: the solver keeps the straight line, says
         why, and the report says so; a trajectory without the option reports nothing about it. """
@@ -263,6 +281,7 @@ if __name__ == "__main__":
     test_drag_fit_of_a_meteoroid_that_ablates_until_it_stops_does_not_depend_on_metsim_step()
     test_drag_fit_keeps_the_velocity_of_a_meteor_that_does_not_decelerate()
     test_without_the_drag_fit_the_solver_warns_when_the_straight_line_is_low()
+    test_drag_fit_notes_typical_fragmentation_pressures_and_erosion_energies()
     test_a_drag_fit_that_is_not_used_is_reported_with_its_reason()
     test_option_is_off_by_default_and_in_old_pickles()
     print("All DragInitialVelocity checks passed.")

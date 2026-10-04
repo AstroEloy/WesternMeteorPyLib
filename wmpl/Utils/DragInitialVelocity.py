@@ -64,6 +64,20 @@ before the first fragmentation, e.g. from the light curve. Without fragmentation
 synthetic meteoroids, the uncertainty of the velocity had a median of 97, 33 and 9 m/s fitting 0.5 s, 1 s and all
 points.
 
+The fit therefore reports, along its model over the fitted points, the dynamic pressure rho_air v^2 and the energy
+received per unit cross section from the top of the atmosphere, E = int rho_air v^3/2 dt, and notes (breakupNotes)
+when the fitted part crosses the 0.04-0.12 or 0.5-5 MPa of the first and second fragmentation phases of ordinary
+chondritic fireballs (Borovicka et al. 2020), with the height where it reaches 0.04 MPa, or the 1-2 MJ/m^2 at which
+the erosion of cometary shower meteoroids observed by CAMO begins (Buccongello et al. 2024). These only point to the
+light curve: Geminids begin to crumble at 1-100 kPa (Henych et al. 2024), and the strength of a given meteoroid can
+be far from them. In the test cases, a fireball at 24 km/s first seen at 75 km crosses 0.04 MPa at 70 km, one first
+seen at 60 km is already at 0.17 MPa and reaches 1 MPa, and a meteor at 30 km/s first seen at 115 km receives
+0.2-6.7 MJ/m^2. Through NRLMSISE-00 at 45 deg from the zenith, 1-2 MJ/m^2 are received by 90-94 km at 12 km/s,
+96-100 km at 20 km/s, 100-105 km at 30 km/s and 111-117 km at 70 km/s, close to the erosion onset heights CAMO fits
+find. So for a meteoroid first seen below about 90 km, the energy criterion puts any erosion before the first point,
+active over the whole fitted part, which the fit absorbs; a fragmentation triggered by pressure is the likelier
+break within it.
+
 The lengths must follow the body. The solver measures the centroid of the light, which with erosion includes the
 wake of the grains slowing down behind the body as they ablate. The fit takes the change of that lag for
 deceleration, and neither its uncertainty nor its RMS show it. How large the bias is depends on how the centroid is
@@ -108,7 +122,7 @@ import scipy.optimize
 
 from wmpl.MetSim.BackwardAtmIntegration import backwardConstants
 from wmpl.MetSim.MetSimErosion import runSimulation
-from wmpl.Utils.AtmosphereDensity import fitAtmPoly
+from wmpl.Utils.AtmosphereDensity import atmDensPoly, fitAtmPoly, getAtmDensity
 
 
 # Default time limit of the fitted points from the reference time (s)
@@ -117,6 +131,14 @@ DEFAULT_TIME_LIMIT = 1.0
 # A curvature of the lengths the straight line was fitted to that puts the velocity at the first point this many
 #   uncertainties above the straight line's is reported (see the module docstring for how it did)
 LINE_BIAS_SIGMA = 2.0
+
+# Dynamic pressures (Pa) of the first and second fragmentation phases of ordinary chondritic fireballs (Borovicka
+#   et al. 2020, ApJ 160, 101), and energies received per unit cross section (J/m^2) at which the erosion of
+#   cometary shower meteoroids observed by CAMO begins (Buccongello et al. 2024, Icarus 410, 115907). They are
+#   indicative: Geminids begin to crumble at 1-100 kPa (Henych et al. 2024), and other populations differ
+FIRST_FRAGMENTATION_PRESSURE = (0.04e6, 0.12e6)
+SECOND_FRAGMENTATION_PRESSURE = (0.5e6, 5e6)
+EROSION_ONSET_ENERGY = (1e6, 2e6)
 
 class DragVelocityFit(object):
     def __init__(self, v_init, v_init_stddev, intercept, drag_coeff, sigma, sigma_stddev, time_offsets, rms,
@@ -153,6 +175,13 @@ class DragVelocityFit(object):
         self.n_points = n_points
         self.ht_range = ht_range
         self.t_range = t_range
+
+        # Along the fitted model over the fitted points (see breakupNotes): the range of the dynamic pressure
+        #   rho_air v^2 (Pa) and of the energy received per unit cross section from the top of the atmosphere
+        #   (J/m^2), and the height where the pressure reaches the first fragmentation phase, if it does there (m)
+        self.dyn_pressure_range = None
+        self.energy_range = None
+        self.first_fragmentation_ht = None
 
 
 class LineBias(object):
@@ -217,9 +246,10 @@ def estimateLineBias(traj):
     return LineBias(coeffs[1] - traj.velocity_fit[0], math.sqrt(abs(cov[1, 1])), len(times), (t_lo, t_hi))
 
 
-def _metsimLengths(const, v0, drag_coeff, sigma, t_lo, t_hi, v_rotation):
+def _metsimLengths(const, v0, drag_coeff, sigma, t_lo, t_hi, v_rotation, profile=False):
     """ Run MetSim from t = 0 forwards to t_hi, and backwards to t_lo if it is negative, and return the times and
-        the lengths along the path from t = 0 in the solver's inertial frame.
+        the lengths along the path from t = 0 in the solver's inertial frame, and with profile also the heights (m)
+        and the speeds relative to the ground (m/s).
 
     MetSim follows the motion relative to the ground, whose speed along the path differs from the inertial one by
     the Earth's rotation, v_rotation, practically constant over the few seconds of a meteor: MetSim starts at
@@ -230,7 +260,8 @@ def _metsimLengths(const, v0, drag_coeff, sigma, t_lo, t_hi, v_rotation):
     const.v_init, const.sigma = v0 - v_rotation, sigma
     const.m_init = (const.gamma*const.shape_factor*const.rho**(-2/3.0)/drag_coeff)**3
 
-    times, lengths = [np.zeros(1)], [np.zeros(1)]
+    times, lengths, heights, speeds = [np.zeros(1)], [np.zeros(1)], [np.array([const.h_init])], \
+        [np.array([const.v_init])]
     for sign, t_kill in [(1, t_hi), (-1, -t_lo)]:
         if t_kill <= 0:
             continue
@@ -239,11 +270,89 @@ def _metsimLengths(const, v0, drag_coeff, sigma, t_lo, t_hi, v_rotation):
         results = np.array(runSimulation(const)[1])
         times.append(results[:, 0])
         lengths.append(results[:, 18])
+        heights.append(results[:, 17])
+        speeds.append(results[:, 19])
 
     times, lengths = np.concatenate(times), np.concatenate(lengths)
     order = np.argsort(times)
 
+    if profile:
+        return times[order], lengths[order] + v_rotation*times[order], np.concatenate(heights)[order], \
+            np.concatenate(speeds)[order]
+
     return times[order], lengths[order] + v_rotation*times[order]
+
+
+def _breakupProfile(fit, const, traj, v_rotation, n_top=200):
+    """ Fill the dynamic pressure and received energy ranges of a fit (see DragVelocityFit) from its model.
+
+    The energy received per unit cross section above the first fitted point, E = int rho v^3/2 dt, is taken with
+    the speed there along a straight path through NRLMSISE-00 up to 180 km, rho v^2/2/cos(z) per unit height; the
+    deceleration above the first point makes it slightly low.
+    """
+
+    t_lo, t_hi = fit.t_range
+    times, _, heights, speeds = _metsimLengths(const, fit.v_init, fit.drag_coeff, fit.sigma*1e-6, t_lo, t_hi,
+        v_rotation, profile=True)
+    inside = (times >= t_lo) & (times <= t_hi)
+    times, heights, speeds = times[inside], heights[inside], speeds[inside]
+    rho = np.array([atmDensPoly(h, const.dens_co) for h in heights])
+    pressure = rho*speeds**2
+
+    # Received above the first point, then along the fitted model
+    hts_top = np.linspace(heights[0], 180e3, n_top)
+    rho_top = np.array([getAtmDensity(traj.rbeg_lat, traj.rbeg_lon, h, traj.jdt_ref) for h in hts_top])
+    e_top = speeds[0]**2/2*np.sum(np.diff(hts_top)*(rho_top[1:] + rho_top[:-1])/2)/math.cos(const.zenith_angle)
+    energy = e_top + np.concatenate([[0], np.cumsum(np.diff(times)*(rho*speeds**3/2)[1:])])
+
+    fit.dyn_pressure_range = (float(np.min(pressure)), float(np.max(pressure)))
+    fit.energy_range = (float(energy[0]), float(energy[-1]))
+    crossed = np.nonzero(pressure >= FIRST_FRAGMENTATION_PRESSURE[0])[0]
+    if len(crossed) and (crossed[0] > 0):
+        fit.first_fragmentation_ht = float(heights[crossed[0]])
+
+
+def breakupNotes(fit):
+    """ Notes on where the fitted part reaches the dynamic pressures at which fireballs typically fragment, or the
+        received energy at which the erosion of shower meteoroids typically begins, either of which would bias the
+        fit if it happens within the fitted part (see the module docstring). They are indicative and only point to
+        the light curve: the strength of a given meteoroid can be far from these values.
+
+    Arguments:
+        fit: [DragVelocityFit]
+
+    Return:
+        [list] Strings, empty if none applies or the ranges were not computed.
+    """
+
+    notes = []
+
+    if fit.dyn_pressure_range is not None:
+        p_lo, p_hi = fit.dyn_pressure_range
+        for (b_lo, b_hi), phase in [(FIRST_FRAGMENTATION_PRESSURE, "first"), (SECOND_FRAGMENTATION_PRESSURE,
+                "second")]:
+            if (p_lo <= b_hi) and (p_hi >= b_lo):
+                note = ("The fitted part spans dynamic pressures of {:.3f}-{:.3f} MPa, across the {:g}-{:g} MPa of "
+                    "the {:s} fragmentation of ordinary chondritic fireballs (Borovicka et al. 2020).").format(
+                    p_lo/1e6, p_hi/1e6, b_lo/1e6, b_hi/1e6, phase)
+                if (phase == "first") and (fit.first_fragmentation_ht is not None):
+                    note += " The pressure reaches {:g} MPa at {:.1f} km: if the light curve flares below, fit " \
+                        "above it (--vinitdraght {:.1f}).".format(b_lo/1e6, fit.first_fragmentation_ht/1000,
+                        fit.first_fragmentation_ht/1000)
+                else:
+                    note += " If the light curve flares within the fitted part, end the fit before it."
+                notes.append(note)
+
+    if fit.energy_range is not None:
+        e_lo, e_hi = fit.energy_range
+        b_lo, b_hi = EROSION_ONSET_ENERGY
+        if (e_lo <= b_hi) and (e_hi >= b_lo):
+            notes.append(("The meteoroid receives {:.2f}-{:.2f} MJ/m^2 over the fitted part, across the {:g}-{:g} "
+                "MJ/m^2 at which the erosion of shower meteoroids typically begins (Buccongello et al. 2024): if "
+                "the light curve rises there, the erosion starts within the fit.").format(e_lo/1e6, e_hi/1e6,
+                b_lo/1e6, b_hi/1e6))
+
+    return notes
 
 
 def fitDragInitialVelocity(traj, ht_min=None, t_max=None, fine_dt=0.001, return_reason=False):
@@ -366,5 +475,11 @@ def fitDragInitialVelocity(traj, ht_min=None, t_max=None, fine_dt=0.001, return_
     fit_result = DragVelocityFit(params[0], stddev[0], params[2], math.exp(params[1]), params[3], stddev[3],
         time_offsets, rms, v_lin, rms_linear, len(times), (np.min(heights), np.max(heights)),
         (np.min(times), np.max(times)))
+
+    # Where the fitted part stands against typical fragmentation pressures and erosion onset energies
+    try:
+        _breakupProfile(fit_result, const, traj, v_rotation)
+    except (ValueError, OverflowError, ZeroDivisionError):
+        pass
 
     return (fit_result, None) if return_reason else fit_result

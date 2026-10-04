@@ -47,7 +47,7 @@ except ImportError:
 
 import wmpl
 from wmpl.Trajectory.Orbit import calcOrbit
-from wmpl.Utils.DragInitialVelocity import DEFAULT_TIME_LIMIT, LINE_BIAS_SIGMA, estimateLineBias, \
+from wmpl.Utils.DragInitialVelocity import DEFAULT_TIME_LIMIT, LINE_BIAS_SIGMA, breakupNotes, estimateLineBias, \
     fitDragInitialVelocity
 from wmpl.Utils.Math import vectNorm, vectMag, meanAngle, findClosestPoints, RMSD, \
     angleBetweenSphericalCoords, angleBetweenVectors, lineFunc, normalizeAngleWrap, confidenceInterval
@@ -4498,6 +4498,12 @@ class Trajectory(object):
             out_str += "  sigma = {:.4f} +/- {:.4f} s^2/km^2, B = {:.4e} m^2/kg\n".format(fit.sigma, fit.sigma_stddev,
                 fit.drag_coeff)
             out_str += "  RMS   = {:.2f} m (straight line: {:.2f} m)\n".format(fit.rms, fit.rms_linear)
+            if getattr(fit, "dyn_pressure_range", None) is not None:
+                out_str += "  Dynamic pressure {:.4f} to {:.4f} MPa, energy received {:.3g} to {:.3g} MJ/m^2\n" \
+                    .format(fit.dyn_pressure_range[0]/1e6, fit.dyn_pressure_range[1]/1e6, fit.energy_range[0]/1e6,
+                    fit.energy_range[1]/1e6)
+            for note in breakupNotes(fit):
+                out_str += "  NOTE: " + note + "\n"
             out_str += "\n"
 
         elif getattr(self, "v_init_drag", False):
@@ -6699,6 +6705,10 @@ class Trajectory(object):
 
                 # Refit jacchia lag fit
                 self.jacchia_fit = self.fitJacchiaLag(self.observations)
+
+                if self.verbose:
+                    for note in breakupNotes(self.v_init_drag_fit):
+                        print("NOTE: " + note)
 
             elif self.verbose:
                 print(self._dragFitRejectedText())
