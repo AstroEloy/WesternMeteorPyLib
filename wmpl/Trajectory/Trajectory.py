@@ -4503,6 +4503,8 @@ class Trajectory(object):
             out_str += "  sigma = {:.4f} +/- {:.4f} s^2/km^2, B = {:.4e} m^2/kg\n".format(fit.sigma, fit.sigma_stddev,
                 fit.drag_coeff)
             out_str += "  RMS   = {:.2f} m (straight line: {:.2f} m)\n".format(fit.rms, fit.rms_linear)
+            if getattr(fit, "atmosphere", None) is not None:
+                out_str += "  Atmosphere: {:s}\n".format(fit.atmosphere)
             if getattr(fit, "dyn_pressure_range", None) is not None:
                 out_str += "  Dynamic pressure {:.4f} to {:.4f} MPa, energy received {:.3g} to {:.3g} MJ/m^2\n" \
                     .format(fit.dyn_pressure_range[0]/1e6, fit.dyn_pressure_range[1]/1e6, fit.energy_range[0]/1e6,

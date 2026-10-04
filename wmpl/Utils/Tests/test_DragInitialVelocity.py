@@ -20,7 +20,8 @@ import numpy as np
 
 from wmpl.Trajectory.Trajectory import Trajectory
 from wmpl.Utils.AtmosphereDensity import atmDensPoly, fitAtmPoly
-from wmpl.Utils.DragInitialVelocity import breakupNotes, fitDragInitialVelocity, fittedTimeLimit
+from wmpl.Utils.DragInitialVelocity import atmosphereDescription, breakupNotes, fitDragInitialVelocity, \
+    fittedTimeLimit
 from wmpl.Utils.Pickling import loadPickle
 from wmpl.Utils.TrajConversions import altAz2RADec, cartesian2Geo, eci2RaDec, geo2Cartesian, raDec2ECI
 
@@ -265,6 +266,36 @@ def test_a_height_limit_alone_is_the_only_limit_and_both_end_at_the_first_reache
     assert t_end < 0.5 and ht_end > 45e3
 
 
+def test_drag_fit_records_the_atmosphere_model_it_used():
+    """ The fit records the atmosphere its densities came from, read from the module that evaluates them:
+        NRLMSISE-00 by default, or the MSIS version and date set by setAtmosphere() where the model can be chosen
+        (pymsis), set here directly in that module, and the report lists it. """
+
+    # The module the fit evaluates its densities with
+    atm = atmosphereDescription.__globals__["fitAtmPoly"].__globals__
+    saved = {key: atm[key] for key in ("MSIS_VERSION", "MSIS_JD") if key in atm}
+
+    try:
+        atm["MSIS_VERSION"], atm["MSIS_JD"] = "00", None
+        assert atmosphereDescription() == "NRLMSISE-00, at the trajectory's time"
+
+        atm["MSIS_VERSION"], atm["MSIS_JD"] = "2.1", 2460310.5
+        assert atmosphereDescription() == "NRLMSIS 2.1, at 2024-01-01 00:00:00 UTC (--atmtime)"
+
+    finally:
+        for key in ("MSIS_VERSION", "MSIS_JD"):
+            atm.pop(key, None)
+        atm.update(saved)
+
+    fit = _solve(30000.0, 1e-6, 0.005, 100e3, 45.0, v_init_drag=True).v_init_drag_fit
+    assert fit.atmosphere == atmosphereDescription()
+
+    example = loadPickle(EXAMPLE_DIR, EXAMPLE_PICKLE)
+    example.v_init_drag, example.v_init_drag_fit = True, fit
+    assert "  Atmosphere: " + fit.atmosphere in example.saveReport(".", "unused.txt", verbose=False,
+        save_results=False)
+
+
 def test_a_drag_fit_that_is_not_used_is_reported_with_its_reason():
     """ Asked for over the first 0.05 s, the drag fit has too few points: the solver keeps the straight line, says
         why, and the report says so; a trajectory without the option reports nothing about it. """
@@ -305,6 +336,7 @@ if __name__ == "__main__":
     test_without_the_drag_fit_the_solver_warns_when_the_straight_line_is_low()
     test_drag_fit_notes_typical_fragmentation_pressures_and_erosion_energies()
     test_a_height_limit_alone_is_the_only_limit_and_both_end_at_the_first_reached()
+    test_drag_fit_records_the_atmosphere_model_it_used()
     test_a_drag_fit_that_is_not_used_is_reported_with_its_reason()
     test_option_is_off_by_default_and_in_old_pickles()
     print("All DragInitialVelocity checks passed.")

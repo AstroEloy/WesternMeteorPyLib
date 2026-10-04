@@ -130,6 +130,7 @@ import scipy.optimize
 from wmpl.MetSim.BackwardAtmIntegration import backwardConstants
 from wmpl.MetSim.MetSimErosion import runSimulation
 from wmpl.Utils.AtmosphereDensity import atmDensPoly, fitAtmPoly, getAtmDensity
+from wmpl.Utils.TrajConversions import jd2Date
 
 
 # Default time limit of the fitted points from the reference time (s), when no limit is given in time or height
@@ -201,6 +202,9 @@ class DragVelocityFit(object):
         self.energy_range = None
         self.first_fragmentation_ht = None
 
+        # The atmosphere model its densities come from (see atmosphereDescription)
+        self.atmosphere = atmosphereDescription()
+
 
 class LineBias(object):
     def __init__(self, bias, bias_stddev, n_points, t_range):
@@ -262,6 +266,23 @@ def estimateLineBias(traj):
     cov = np.linalg.pinv(design.T.dot(design))*np.sum(res**2)/(len(times) - 3)
 
     return LineBias(coeffs[1] - traj.velocity_fit[0], math.sqrt(abs(cov[1, 1])), len(times), (t_lo, t_hi))
+
+
+def atmosphereDescription():
+    """ The atmosphere model the fit's densities come from, as the module that evaluates them is set: the MSIS
+        version and date chosen with --atm and --atmtime (wmpl.Utils.AtmosphereDensity.setAtmosphere), or
+        NRLMSISE-00 where the version cannot be chosen. It is read from the globals of fitAtmPoly itself, so it is
+        the model actually used, in this process and in each Monte Carlo one. """
+
+    atm = fitAtmPoly.__globals__
+    version = atm.get("MSIS_VERSION")
+    name = "NRLMSISE-00" if version in (None, "00") else "NRLMSIS " + version
+
+    jd = atm.get("MSIS_JD")
+    if jd is None:
+        return name + ", at the trajectory's time"
+
+    return name + ", at " + jd2Date(jd, dt_obj=True).strftime("%Y-%m-%d %H:%M:%S") + " UTC (--atmtime)"
 
 
 def _metsimLengths(const, v0, drag_coeff, sigma, t_lo, t_hi, v_rotation, profile=False):
