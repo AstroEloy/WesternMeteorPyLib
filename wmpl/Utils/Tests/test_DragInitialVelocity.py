@@ -198,7 +198,8 @@ def test_drag_fit_of_a_meteoroid_that_ablates_until_it_stops_does_not_depend_on_
 
 def test_drag_fit_keeps_the_velocity_of_a_meteor_that_does_not_decelerate():
     """ Without measurable deceleration (B = 1e-6 m^2/kg) the drag fit gives the straight-line velocity back, both
-        within their uncertainties of the true one. """
+        within their uncertainties of the true one, and the solver keeps the straight line, which is the more
+        precise (1 m/s off against 12 +/- 34 m/s). """
 
     traj = _solve(30000.0, 1e-6, 0.005, 100e3, 45.0, v_init_drag=True)
     fit = traj.v_init_drag_fit
@@ -206,6 +207,23 @@ def test_drag_fit_keeps_the_velocity_of_a_meteor_that_does_not_decelerate():
     assert fit is not None
     assert abs(fit.v_init - 30000.0) < max(3*fit.v_init_stddev, 15.0)
     assert abs(fit.v_init_linear - 30000.0) < 15.0
+    assert fit.line_preferred and traj.v_init == fit.v_init_linear
+
+
+def test_without_the_drag_fit_the_solver_warns_when_the_straight_line_is_low():
+    """ With the option off, a parabola over the straight line's points flags the fireball first seen at 60 km,
+        whose straight line is 617 m/s low, as 978 +/- 137 m/s, and suggests the drag fit; the meteor without
+        measurable deceleration is not flagged. """
+
+    traj = _solve(24000.0, 5.3e-3, 0.005, 60e3, 45.0, v_init_drag=False)
+    bias = traj.v_init_line_bias
+
+    assert bias is not None and bias.significant
+    assert 300 < bias.bias < 2000 and (24000.0 - traj.v_init) > 300
+    assert "consider --vinitdrag" in traj._lineBiasWarning()
+
+    bias = _solve(30000.0, 1e-6, 0.005, 100e3, 45.0, v_init_drag=False).v_init_line_bias
+    assert bias is not None and not bias.significant
 
 
 def test_option_is_off_by_default_and_in_old_pickles():
@@ -216,6 +234,7 @@ def test_option_is_off_by_default_and_in_old_pickles():
 
     traj = loadPickle(EXAMPLE_DIR, EXAMPLE_PICKLE)
     assert traj.v_init_drag is False and traj.v_init_drag_fit is None
+    assert traj.v_init_line_bias is None
 
 
 if __name__ == "__main__":
@@ -224,5 +243,6 @@ if __name__ == "__main__":
     test_drag_fit_ends_before_a_fragmentation()
     test_drag_fit_of_a_meteoroid_that_ablates_until_it_stops_does_not_depend_on_metsim_step()
     test_drag_fit_keeps_the_velocity_of_a_meteor_that_does_not_decelerate()
+    test_without_the_drag_fit_the_solver_warns_when_the_straight_line_is_low()
     test_option_is_off_by_default_and_in_old_pickles()
     print("All DragInitialVelocity checks passed.")

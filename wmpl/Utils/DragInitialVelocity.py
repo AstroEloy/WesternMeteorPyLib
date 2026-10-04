@@ -17,6 +17,18 @@ and sigma, and with them the velocity at the first point. The time offsets of th
 reference one are fitted again, since the solver estimates them with a lag model that absorbs part of the
 deceleration; they are only used for this fit.
 
+The solver takes the fitted velocity only if it is more than sqrt(2) of its uncertainties from the straight line's
+(LINE_PREFERRED_SIGMA): the squared difference minus the fit's variance estimates the straight line's squared bias,
+so closer than that the straight line, much more precise, has the smaller expected squared error. Through the
+solver, on 10 synthetic meteoroids (15-40 km/s, B from 1e-6 to 5.3e-3 m^2/kg, first seen at 60-105 km, two noise
+realizations each), it kept the straight line in the 14 runs with B up to 1e-3 m^2/kg, 0-24 m/s off while the drag
+fit's uncertainty was 7-45 m/s, and took the drag fit in 5 runs whose straight line was 49-617 m/s low, 9-24 m/s
+off. In one run it kept a straight line 70 m/s low, the drag fit being 49 +/- 41 m/s from it. With the option off,
+estimateLineBias() fits a parabola to the straight line's points and the solver warns when it puts the velocity
+at the first point more than 2 sigma above the straight line's: in the same runs it warned for straight lines
+70-617 m/s low, not for two 49 and 141 m/s low (1.8 sigma), and never for the 14 runs with B up to 1e-3 m^2/kg.
+Neither check sees a fragmentation or a wake (below).
+
 MetSim erodes mass with the same law as it ablates it, so the erosion of the main body is absorbed by the fitted
 sigma, which is then sigma + eta; the eroded grains are not followed. On the true lengths of the main body of the
 MetSim erosion model, with 10 m of noise (20 km/s and 1 kg first seen at 70 km, 30 km/s and 0.1 kg first seen at 80
@@ -48,6 +60,15 @@ longest for large grains, thin air and slow meteors. If the meteor shows a signi
 function, the fitted velocity should not be trusted; data that follow the leading fragment, as high-resolution
 tracking does, are not affected.
 
+Two checks can reveal a wake, neither reliably. Synthetic two-station events (the tests above, one station's
+centroid taking 100 m of the wake and the other's 1000 m, fits of 1 s and of all points, three noise realizations):
+fitting each station alone and comparing their velocities flagged (over 3 sigma) 15 of the 31 biased events and none
+of the 17 unbiased ones; the mass implied by B, (Gamma A rho_m^(-2/3)/B)^3 with the true Gamma A and bulk density,
+outside 0.1-10 times the true mass flagged 16 of the 31 and 2 of the 17; either, 25 of the 31. The misses were fits
+of all points 28-110 m/s off. Over 1 s, B is poorly constrained even without a wake (implied mass 0.3-8 times the
+true one), and the bulk density enters the implied mass squared, so against a photometric mass this check only flags
+gross cases.
+
 Fitting all the points of 50 synthetic meteoroids without fragmentation (15-40 km/s, B from 1.1e-3 to 2.5e-2
 m^2/kg, sigma from 0.005 to 0.05 s^2/km^2, first seen at 50 and 70 km, observed while they keep 1e-3 of their mass
 and 40% of their speed, with NRLMSISE-00 as the atmosphere) the velocity error over its formal uncertainty had an
@@ -71,6 +92,16 @@ from wmpl.Utils.AtmosphereDensity import fitAtmPoly
 
 # Default time limit of the fitted points from the reference time (s)
 DEFAULT_TIME_LIMIT = 1.0
+
+# The straight line is kept if the drag fit's velocity is within this many of its uncertainties of it: the
+#   squared difference minus the drag fit's variance estimates the straight line's squared bias, so below
+#   sqrt(2) uncertainties the straight line has the smaller expected squared error
+LINE_PREFERRED_SIGMA = math.sqrt(2)
+
+# A curvature of the lengths the straight line was fitted to that puts the velocity at the first point this many
+#   uncertainties above the straight line's is reported. Through the solver, no meteoroid without measurable
+#   deceleration came out above 1.5
+LINE_BIAS_SIGMA = 2.0
 
 class DragVelocityFit(object):
     def __init__(self, v_init, v_init_stddev, intercept, drag_coeff, sigma, sigma_stddev, time_offsets, rms,
@@ -107,6 +138,70 @@ class DragVelocityFit(object):
         self.n_points = n_points
         self.ht_range = ht_range
         self.t_range = t_range
+
+        # The drag fit does not measure a bias of the straight line, which is then the more precise estimate
+        self.line_preferred = abs(v_init - v_init_linear) < LINE_PREFERRED_SIGMA*v_init_stddev
+
+
+class LineBias(object):
+    def __init__(self, bias, bias_stddev, n_points, t_range):
+        """ Result of estimateLineBias().
+
+        Arguments:
+            bias: [float] Velocity at the reference time from a parabola minus the straight line's (m/s).
+            bias_stddev: [float] Its formal 1-sigma uncertainty (m/s).
+            n_points: [int] Number of points of the straight-line fit.
+            t_range: [tuple] Earliest and latest time of those points from the reference time (s).
+        """
+
+        self.bias = bias
+        self.bias_stddev = bias_stddev
+        self.n_points = n_points
+        self.t_range = t_range
+
+        # The straight line measurably underestimates the initial velocity
+        self.significant = bias > LINE_BIAS_SIGMA*bias_stddev
+
+
+def estimateLineBias(traj):
+    """ Estimate how much the solver's straight line underestimates the initial velocity, from a parabola fitted
+        to the same points.
+
+    A straight line fitted to a meteor decelerating at a over a time T has the velocity at its middle, a*T/2 below
+    the one at its start. The parabola measures the deceleration over those points, and its velocity at the
+    reference time is compared with the straight line's. It is cheap and needs no model, so the solver gives it
+    when the drag fit is off, and reports it when it is significant (see LINE_BIAS_SIGMA). It is a rough estimate:
+    through the solver, on synthetic meteoroids whose straight line was 49-617 m/s low, it gave 1.1-1.8 times that.
+
+    Arguments:
+        traj: [Trajectory] Solved trajectory, with velocity_fit and velocity_fit_t_range.
+
+    Return:
+        [LineBias] or None if the straight line's points are unknown or too few.
+    """
+
+    if (traj.velocity_fit is None) or (getattr(traj, "velocity_fit_t_range", None) is None):
+        return None
+
+    t_lo, t_hi = traj.velocity_fit_t_range
+    times, lengths = [], []
+    for obs in traj.observations:
+        if obs.ignore_station:
+            continue
+        good = (obs.ignore_list == 0) & (obs.time_data >= t_lo) & (obs.time_data <= t_hi)
+        times.append(obs.time_data[good])
+        lengths.append(obs.state_vect_dist[good])
+    times, lengths = np.concatenate(times), np.concatenate(lengths)
+    if len(times) <= 4:
+        return None
+
+    # Length = intercept + v*t - a*t^2/2, with the formal uncertainties scaled by the residual variance
+    design = np.column_stack([np.ones_like(times), times, -times**2/2])
+    coeffs = np.linalg.lstsq(design, lengths, rcond=None)[0]
+    res = lengths - design.dot(coeffs)
+    cov = np.linalg.pinv(design.T.dot(design))*np.sum(res**2)/(len(times) - 3)
+
+    return LineBias(coeffs[1] - traj.velocity_fit[0], math.sqrt(abs(cov[1, 1])), len(times), (t_lo, t_hi))
 
 
 def _metsimLengths(const, v0, drag_coeff, sigma, t_lo, t_hi, v_rotation):
