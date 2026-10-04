@@ -17,15 +17,36 @@ and sigma, and with them the velocity at the first point. The time offsets of th
 reference one are fitted again, since the solver estimates them with a lag model that absorbs part of the
 deceleration; they are only used for this fit.
 
-MetSim erodes mass with the same law as it ablates it, so a constant erosion coefficient eta is absorbed by the
-fitted sigma, which is then sigma + eta; the eroded grains are not followed. Erosion that starts within the fitted
-part, or a fragmentation, is not described, and the fit does not detect it: its RMS stays below the straight
-line's. In synthetic tests (20 and 30 km/s, first seen at 55 and 70 km), the main body losing 50-80% of its mass
-10-20 km below the first point biased the velocity by 40-480 m/s, 5-29 times its uncertainty, and erosion with
-eta = 0.1-0.3 s^2/km^2 starting 10 km below by up to 110 m/s, 5 times; fitting only the points above the event,
-all were within their uncertainty. Hence the fitted part ends at a time or a height, which should be before the
-first fragmentation, e.g. from the light curve. Without fragmentation, on the true lengths of 35 synthetic
-meteoroids, the uncertainty of the velocity had a median of 97, 33 and 9 m/s fitting 0.5 s, 1 s and all points.
+MetSim erodes mass with the same law as it ablates it, so the erosion of the main body is absorbed by the fitted
+sigma, which is then sigma + eta; the eroded grains are not followed. On the true lengths of the main body of the
+MetSim erosion model, with 10 m of noise (20 km/s and 1 kg first seen at 70 km, 30 km/s and 0.1 kg first seen at 80
+km), erosion with eta = 0.1-0.3 s^2/km^2 from above the first point or starting 3-8 km below it, or changing from
+0.05 to 0.5 s^2/km^2 5 km below it, left the velocity within its uncertainty of that of the same meteoroid without
+erosion with the same noise in 63 of 72 fits of 1 s or all points, and within 3.1 times it in all, while the
+straight line was 35-230 m/s low. The fitted sigma was sigma + eta, e.g. 0.106 s^2/km^2 for sigma = 0.005 and eta =
+0.1 fitting all points. Over 1 s sigma is often poorly constrained, and reached its bound of 0.5 s^2/km^2 even
+without erosion, so it does not flag the problems below.
+
+A fragmentation is not described, and the fit does not detect it: its RMS stays below the straight line's. In
+synthetic tests (20 and 30 km/s, first seen at 55 and 70 km), the main body losing 50-80% of its mass 10-20 km below
+the first point biased the velocity by 40-480 m/s, 5-29 times its uncertainty, and erosion with eta = 0.1-0.3
+s^2/km^2 starting 10 km below by up to 110 m/s, 5 times; fitting only the points above the event, all were within
+their uncertainty. Hence the fitted part ends at a time or a height, which should be before the first
+fragmentation, e.g. from the light curve. Without fragmentation, on the true lengths of 35 synthetic meteoroids,
+the uncertainty of the velocity had a median of 97, 33 and 9 m/s fitting 0.5 s, 1 s and all points.
+
+The lengths must follow the body. The solver measures the centroid of the light, which with erosion includes the
+wake of the grains slowing down behind the body as they ablate. The fit takes the change of that lag for
+deceleration, and neither its uncertainty nor its RMS show it. On the luminosity-weighted centroid of the main body
+and of the grains within 1 km behind it, in the tests above and fitting 1 s, eta = 0.1 s^2/km^2 at 30 km/s moved the
+velocity by about 25 m/s (1 sigma) with grains of 1e-9 to 1e-7 kg, while the straight line was 465 m/s low, but by
+230-280 m/s with grains of 1e-7 to 1e-5 and 1e-6 to 1e-4 kg; at 20 km/s with grains of 1e-6 to 1e-4 kg the velocity
+was 400 m/s low, 21-26 times its uncertainty. With the larger grains the errors ranged from -470 to +185 m/s, of
+either sign depending on where the erosion started, and the fit was sometimes further off than the straight line.
+For a grain that keeps its speed, the lag when it is consumed goes as m^(1/3)/(sigma^2 rho_air v^4), so the wake is
+longest for large grains, thin air and slow meteors. If the meteor shows a significant wake within the point spread
+function, the fitted velocity should not be trusted; data that follow the leading fragment, as high-resolution
+tracking does, are not affected.
 
 Fitting all the points of 50 synthetic meteoroids without fragmentation (15-40 km/s, B from 1.1e-3 to 2.5e-2
 m^2/kg, sigma from 0.005 to 0.05 s^2/km^2, first seen at 50 and 70 km, observed while they keep 1e-3 of their mass

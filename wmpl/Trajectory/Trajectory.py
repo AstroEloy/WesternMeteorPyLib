@@ -2486,7 +2486,9 @@ class Trajectory(object):
                 wmpl.Utils.DragInitialVelocity). The straight line fitted to the first part underestimates the
                 velocity at the first point of a meteor that already decelerates there, by hundreds of m/s for
                 fireballs first seen at 45-60 km. False by default. If the fit fails or does not fit better than
-                the straight line, the straight-line velocity is kept.
+                the straight line, the straight-line velocity is kept. The erosion of the body is absorbed by the
+                fitted ablation coefficient, but the points must follow the body: a significant wake of eroded
+                grains behind it shifts the measured centroids and can bias the velocity by hundreds of m/s.
             v_init_drag_time: [float] Only points within this time from the first point, in seconds, are used in
                 the drag fit, 1 s by default; None for no limit. The fit does not model fragmentation, so the
                 fitted part should end before the first one.
