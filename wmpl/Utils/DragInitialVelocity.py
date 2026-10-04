@@ -33,6 +33,13 @@ runs), it warned for 7 of the 10 straight lines over 100 m/s low, 1 of the 5 tha
 17 within 50 m/s (that one 5 m/s low); its precision falls with the speed: it did not warn for any of the four
 straight lines 60-172 m/s low above 35 km/s. Neither check sees a fragmentation or a wake (below).
 
+In the solver's Monte Carlo the fit is redone for each realization, so the spread of the initial velocity, and of
+the orbit, includes it. For the fireball at 24 km/s first seen at 60 km, with 30 realizations (geometric
+uncertainties, 8 cores), every realization used the fit, each took 2.0 s against 1.5 s without it, and their
+velocities were 0.4 m/s off on average with a spread of 29 m/s, against a formal uncertainty of the nominal fit of
+34 m/s; without the option the realizations were 614 m/s low with a spread of 10 m/s, so the Monte Carlo uncertainty
+of the straight line does not include its bias.
+
 MetSim erodes mass with the same law as it ablates it, so the erosion of the main body is absorbed by the fitted
 sigma, which is then sigma + eta; the eroded grains are not followed. On the true lengths of the main body of the
 MetSim erosion model, integrated with 0.1 ms steps, with 10 m of noise and ten noise realizations (20 km/s and 1 kg
