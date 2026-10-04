@@ -92,12 +92,15 @@ def _metsimLengths(const, v0, drag_coeff, sigma, t_lo, t_hi, v_rotation):
     return times[order], lengths[order] + v_rotation*times[order]
 
 
-def fitDragInitialVelocity(traj):
+def fitDragInitialVelocity(traj, fine_dt=0.001):
     """ Fit the single-body drag and ablation model to the lengths of all non-ignored points of a solved
         trajectory (see the module docstring).
 
     Arguments:
         traj: [Trajectory] Solved trajectory, with time_data, state_vect_dist and model_ht of its observations.
+
+    Keyword arguments:
+        fine_dt: [float] MetSim time step of the final fit (s). The starting fits use MetSim's default step.
 
     Return:
         [DragVelocityFit] or None if the fit did not converge or does not fit better than the straight line.
@@ -166,6 +169,11 @@ def fitDragInitialVelocity(traj):
     offsets = list(first.x[3:])
     best = min((fit([v0, log_b, intercept, s] + offsets, lb[:3] + [0.0] + lb[3:], ub[:3] + [0.5] + ub[3:],
         x_scale[:3] + [0.005] + x_scale[3:]) for s in (0.001, 0.01, 0.05)), key=lambda r: r.cost)
+
+    # MetSim advances the speed and the mass one after the other, to first order in the time step, which biases
+    #   the velocity of a strongly ablating meteoroid high; the final fit refines the best start with a finer step
+    const.dt = fine_dt
+    best = fit(best.x, lb[:3] + [0.0] + lb[3:], ub[:3] + [0.5] + ub[3:], x_scale[:3] + [0.005] + x_scale[3:])
 
     # The straight line is the model without drag, so a worse fit than it means the fit went wrong
     rms = np.sqrt(np.mean(best.fun**2))
