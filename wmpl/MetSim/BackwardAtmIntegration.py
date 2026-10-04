@@ -11,14 +11,17 @@ From the command line, to a height or for a time, with or without Monte Carlo re
 State vectors are [x, y, z, vx, vy, vz] in ECI (true equator and equinox of date), in m and m/s, with the
 velocity pointing to the radiant, as the solver gives them and reboundSimulate() takes them.
 
-The run follows a single body, whose mass grows back as dm = sigma m v dv. MetSim erodes the body with the same
-law as it ablates it, so its erosion is undone by giving the effective coefficient sigma + eta: only the eroded
-grains, which are not followed, cannot be undone. The coefficient should then be the meteoroid's apparent one, as
-fitted to its deceleration (e.g. by DynamicMassFit, AlphaBeta or the trajectory solver's --vinitdrag over all its
-points), which includes its erosion; for fireballs, Ceplecha et al. (1998) give 0.014, 0.042, 0.10 and 0.21
-s^2/km^2 for types I, II, IIIA and IIIB, and single bright meteors range from 0.001 to 0.19 s^2/km^2 (Silber et
-al. 2015). It matters when the run starts deep. Run back to 180 km, the speed there relative to a run with a frozen
-mass, and the mass there over the starting one, were, for sigma = 0.023 and sigma + eta = 0.123 and 0.323 s^2/km^2:
+The run follows a single body, whose mass grows back as dm = sigma m v dv. MetSim erodes the body with the same law
+as it ablates it, so its erosion is undone by giving the effective coefficient sigma + eta: only the eroded grains,
+which are not followed, cannot be undone. The coefficient is the effective one between the starting point and where
+the run ends, which nothing observed measures. An apparent coefficient fitted to the meteoroid's deceleration (e.g.
+by DynamicMassFit, AlphaBeta or the trajectory solver's --vinitdrag over all its points) includes its erosion, but
+over the observed part, lower down: where the erosion or fragmentation grows with the dynamic pressure, it is larger
+there than above, so taking it overestimates the mass growth. The same holds for Ceplecha et al. (1998)'s 0.014,
+0.042, 0.10 and 0.21 s^2/km^2 for fireball types I, II, IIIA and IIIB, apparent coefficients over whole trajectories
+including their gross fragmentation; single bright meteors range from 0.001 to 0.19 s^2/km^2 (Silber et al. 2015).
+It matters when the run starts deep. Run back to 180 km, the speed there relative to a run with a frozen mass, and
+the mass there over the starting one, were, for sigma = 0.023 and sigma + eta = 0.123 and 0.323 s^2/km^2:
 
 | Start | Speed change (m/s) | Mass ratio |
 |---|---|---|
@@ -27,10 +30,22 @@ mass, and the mass there over the starting one, were, for sigma = 0.023 and sigm
 | 1 kg at 15 km/s from 60 km, 60 deg from the zenith | -8, -37, -81 | 1.14, 1.9, 4.2 |
 | 1 kg at 20 km/s from 50 km | -129, -455, -730 | 1.8, 9.8, 62 |
 
-Where the erosion starts above the first point hardly matters: starting 10 km above it instead of at the top of
-the atmosphere changed the speed by 9.5 m/s of the 730. When the coefficient is uncertain, --ablation_coeff_sigma
-draws one for each Monte Carlo realization; otherwise the command lines also report the nominal run with the
-coefficients of types I and IIIB.
+What matters most is whether the body was already eroding just above the first point. With eta = 0.3 s^2/km^2 only
+up to some height above the start, and sigma = 0.023 above it, the share of the speed change that eroding all the
+way up gives, from the run without erosion, and the mass at 180 km over the starting one were:
+
+| Eroding up to | 15 km/s from 60 km | 20 km/s from 50 km |
+|---|---|---|
+| 0.5 km above | 18%, 1.27 | 26%, 2.6 |
+| 1 km above | 32%, 1.40 | 44%, 3.6 |
+| 2 km above | 53%, 1.65 | 66%, 6.1 |
+| 5 km above | 84%, 2.37 | 90%, 15.9 |
+| 10 km above | 97%, 3.23 | 98%, 33.7 |
+| 180 km | 100% (-73 m/s), 4.15 | 100% (-601 m/s), 61.9 |
+
+The speed is set within the first few km, while the mass keeps growing with any erosion higher up. When the
+coefficient is uncertain, --ablation_coeff_sigma draws one for each Monte Carlo realization; otherwise the command
+lines also report the nominal run with the coefficients of types I and IIIB.
 """
 
 import argparse
@@ -202,8 +217,9 @@ def addBackwardArguments(arg_parser):
     arg_parser.add_argument("--ablation_coeff", type=float, default=Constants().sigma*1e6,
         help="Effective ablation coefficient in s^2/km^2: the mass lost for the kinetic energy lost to the drag "
         "(dm = sigma m v dv), so it sets how fast the mass grows back. It includes the erosion of the body "
-        "(sigma + eta), so it is best the meteoroid's apparent coefficient, fitted to its deceleration; Ceplecha's "
-        "fireball types I, II, IIIA and IIIB have 0.014, 0.042, 0.10 and 0.21. Default: MetSim's, {:g}.".format(
+        "(sigma + eta) above the starting point. An apparent coefficient fitted to the meteoroid's deceleration, or "
+        "Ceplecha's 0.014, 0.042, 0.10 and 0.21 for fireball types I, II, IIIA and IIIB, includes the erosion, but "
+        "measured lower down it likely overestimates the growth above. Default: MetSim's, {:g}.".format(
         Constants().sigma*1e6))
 
     arg_parser.add_argument("--ablation_coeff_sigma", type=float, default=0.0,
