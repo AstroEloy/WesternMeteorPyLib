@@ -198,8 +198,7 @@ def test_drag_fit_of_a_meteoroid_that_ablates_until_it_stops_does_not_depend_on_
 
 def test_drag_fit_keeps_the_velocity_of_a_meteor_that_does_not_decelerate():
     """ Without measurable deceleration (B = 1e-6 m^2/kg) the drag fit gives the straight-line velocity back, both
-        within their uncertainties of the true one, and the solver keeps the straight line, which is the more
-        precise (1 m/s off against 12 +/- 34 m/s). """
+        within their uncertainties of the true one, and the solver takes it. """
 
     traj = _solve(30000.0, 1e-6, 0.005, 100e3, 45.0, v_init_drag=True)
     fit = traj.v_init_drag_fit
@@ -207,7 +206,7 @@ def test_drag_fit_keeps_the_velocity_of_a_meteor_that_does_not_decelerate():
     assert fit is not None
     assert abs(fit.v_init - 30000.0) < max(3*fit.v_init_stddev, 15.0)
     assert abs(fit.v_init_linear - 30000.0) < 15.0
-    assert fit.line_preferred and traj.v_init == fit.v_init_linear
+    assert traj.v_init == fit.v_init and traj.v_init_stddev == fit.v_init_stddev
 
 
 def test_without_the_drag_fit_the_solver_warns_when_the_straight_line_is_low():

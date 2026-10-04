@@ -403,7 +403,7 @@ def addSolverOptions(arg_parser, skip_velpart=False):
         type=float)
 
     arg_parser.add_argument('--vinitdrag', \
-        help='Estimate the initial velocity from a single-body drag and ablation fit to the points before --vinitdragtime and above --vinitdraght instead of a straight line over the first part, which underestimates it for a meteor that already decelerates there (e.g. a fireball first seen below 60-70 km). The straight-line velocity is kept if the fit fails, does not fit better, or is within sqrt(2) of its uncertainties of it. Without this option, the solver warns when a parabola over the points of the straight line shows it underestimates the velocity. The points must follow the body: a significant wake of eroded grains can bias the velocity by hundreds of m/s.', \
+        help='Estimate the initial velocity from a single-body drag and ablation fit to the points before --vinitdragtime and above --vinitdraght instead of a straight line over the first part, which underestimates it for a meteor that already decelerates there (e.g. a fireball first seen below 60-70 km). The straight-line velocity is kept if the fit fails or does not fit better. Without this option, the solver warns when a parabola over the points of the straight line shows it underestimates the velocity. The points must follow the body: a significant wake of eroded grains can bias the velocity by hundreds of m/s.', \
         action="store_true")
 
     arg_parser.add_argument('--vinitdragtime', metavar='V_INIT_DRAG_TIME', \

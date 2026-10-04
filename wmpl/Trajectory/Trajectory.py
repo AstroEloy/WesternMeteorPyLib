@@ -47,8 +47,8 @@ except ImportError:
 
 import wmpl
 from wmpl.Trajectory.Orbit import calcOrbit
-from wmpl.Utils.DragInitialVelocity import DEFAULT_TIME_LIMIT, LINE_BIAS_SIGMA, LINE_PREFERRED_SIGMA, \
-    estimateLineBias, fitDragInitialVelocity
+from wmpl.Utils.DragInitialVelocity import DEFAULT_TIME_LIMIT, LINE_BIAS_SIGMA, estimateLineBias, \
+    fitDragInitialVelocity
 from wmpl.Utils.Math import vectNorm, vectMag, meanAngle, findClosestPoints, RMSD, \
     angleBetweenSphericalCoords, angleBetweenVectors, lineFunc, normalizeAngleWrap, confidenceInterval
 from wmpl.Utils.Misc import valueFormat
@@ -2488,9 +2488,8 @@ class Trajectory(object):
                 velocity at the first point of a meteor that already decelerates there, by hundreds of m/s for
                 fireballs first seen at 45-60 km. False by default, and then the solver warns when a parabola
                 over the straight line's points puts the initial velocity more than 2 sigma above it (see
-                wmpl.Utils.DragInitialVelocity.estimateLineBias). If the fit fails, does not fit better than the
-                straight line, or is within sqrt(2) of its uncertainties of it, the more precise straight-line
-                velocity is kept. The erosion of the body is absorbed by the
+                wmpl.Utils.DragInitialVelocity.estimateLineBias). If the fit fails or does not fit better than the
+                straight line, the straight-line velocity is kept. The erosion of the body is absorbed by the
                 fitted ablation coefficient, but the points must follow the body: a significant wake of eroded
                 grains behind it shifts the measured centroids and can bias the velocity by hundreds of m/s.
             v_init_drag_time: [float] Only points within this time from the first point, in seconds, are used in
@@ -4482,9 +4481,6 @@ class Trajectory(object):
             out_str += "Initial velocity from the drag and ablation fit to {:d} points, {:.3f} to {:.3f} s, ".format(
                 fit.n_points, fit.t_range[0], fit.t_range[1])
             out_str += "{:.2f} to {:.2f} km:\n".format(fit.ht_range[1]/1000, fit.ht_range[0]/1000)
-            if fit.line_preferred:
-                out_str += "  Not used: within {:.2f} of its uncertainties of the straight line, which is kept as " \
-                    "the more precise\n".format(LINE_PREFERRED_SIGMA)
             out_str += "  Vinit = {:.2f} +/- {:.2f} m/s (straight line over the first part: {:.2f} m/s)\n".format(
                 fit.v_init, fit.v_init_stddev, fit.v_init_linear)
             out_str += "  sigma = {:.4f} +/- {:.4f} s^2/km^2, B = {:.4e} m^2/kg\n".format(fit.sigma, fit.sigma_stddev,
@@ -6675,9 +6671,8 @@ class Trajectory(object):
             self.v_init_drag_fit = fitDragInitialVelocity(self, t_max=self.v_init_drag_time,
                 ht_min=(None if self.v_init_drag_ht is None else 1000*self.v_init_drag_ht))
 
-            # Keep the straight-line velocity if the fit failed, does not fit better, or does not measure a bias
-            #   of the straight line, which is then the more precise estimate
-            if (self.v_init_drag_fit is not None) and (not self.v_init_drag_fit.line_preferred):
+            # Keep the straight-line velocity if the fit failed or does not fit better
+            if self.v_init_drag_fit is not None:
 
                 self.v_init = self.v_init_drag_fit.v_init
                 self.v_init_stddev = self.v_init_drag_fit.v_init_stddev
@@ -6689,13 +6684,9 @@ class Trajectory(object):
                 # Refit jacchia lag fit
                 self.jacchia_fit = self.fitJacchiaLag(self.observations)
 
-            elif self.verbose and (self.v_init_drag_fit is None):
+            elif self.verbose:
                 print("The drag fit of the initial velocity did not converge or fit better than the straight line, "
                     "keeping the straight-line initial velocity.")
-
-            elif self.verbose:
-                print("The drag fit's initial velocity is within {:.2f} of its uncertainties of the straight line's, "
-                    "keeping the more precise straight-line initial velocity.".format(LINE_PREFERRED_SIGMA))
 
         # Without the drag fit, estimate whether the straight line underestimates the initial velocity
         elif self.v_init_ht is None:

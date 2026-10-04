@@ -17,41 +17,52 @@ and sigma, and with them the velocity at the first point. The time offsets of th
 reference one are fitted again, since the solver estimates them with a lag model that absorbs part of the
 deceleration; they are only used for this fit.
 
-The solver takes the fitted velocity only if it is more than sqrt(2) of its uncertainties from the straight line's
-(LINE_PREFERRED_SIGMA): the squared difference minus the fit's variance estimates the straight line's squared bias,
-so closer than that the straight line, much more precise, has the smaller expected squared error. Through the
-solver, on 10 synthetic meteoroids (15-40 km/s, B from 1e-6 to 5.3e-3 m^2/kg, first seen at 60-105 km, two noise
-realizations each), it kept the straight line in the 14 runs with B up to 1e-3 m^2/kg, 0-24 m/s off while the drag
-fit's uncertainty was 7-45 m/s, and took the drag fit in 5 runs whose straight line was 49-617 m/s low, 9-24 m/s
-off. In one run it kept a straight line 70 m/s low, the drag fit being 49 +/- 41 m/s from it. With the option off,
-estimateLineBias() fits a parabola to the straight line's points and the solver warns when it puts the velocity
-at the first point more than 2 sigma above the straight line's: in the same runs it warned for straight lines
-70-617 m/s low, not for two 49 and 141 m/s low (1.8 sigma), and never for the 14 runs with B up to 1e-3 m^2/kg.
-Neither check sees a fragmentation or a wake (below).
+With the option on, the solver takes the fitted velocity whenever the fit converges and fits better than the
+straight line. Keeping the straight line when the fit does not measure its bias (when the two velocities are within
+sqrt(2) of the fit's uncertainty) was tried and dropped: it rests on the straight line being the more precise, but
+the solver's straight-line uncertainty is formal: through the solver, on the synthetic meteoroids below, where that
+rule kept the straight line its errors were 5-10 times that uncertainty in RMS. On 26 synthetic meteoroids (12-65
+km/s, B from 1e-6 to 1.5e-2 m^2/kg, sigma 0.005-0.03 s^2/km^2, first seen at 55-115 km, two noise realizations each,
+52 runs), the RMS velocity error was 195 and 251 m/s for the straight line, 15 and 23 m/s for the drag fit, and 20
+and 27 m/s with that rule (the first 10 meteoroids, then 16 others); no threshold for it did consistently better
+than none. Even where it kept the straight line, the drag fit's RMS error was smaller (14 against 21 and 20 against
+29 m/s), and its own uncertainty was calibrated (RMS of the error over it 0.87 and 0.99). With the option off,
+estimateLineBias() fits a parabola to the straight line's points and the solver warns when it puts the velocity at
+the first point more than 2 sigma above the straight line's. On the 16 meteoroids not used to set that threshold (32
+runs), it warned for 7 of the 10 straight lines over 100 m/s low, 1 of the 5 that were 50-100 m/s low, and 1 of the
+17 within 50 m/s (that one 5 m/s low); its precision falls with the speed: it did not warn for any of the four
+straight lines 60-172 m/s low above 35 km/s. Neither check sees a fragmentation or a wake (below).
 
 MetSim erodes mass with the same law as it ablates it, so the erosion of the main body is absorbed by the fitted
 sigma, which is then sigma + eta; the eroded grains are not followed. On the true lengths of the main body of the
 MetSim erosion model, integrated with 0.1 ms steps, with 10 m of noise and ten noise realizations (20 km/s and 1 kg
 first seen at 70 km, 30 km/s and 0.1 kg first seen at 80 km), erosion with eta = 0.1-0.3 s^2/km^2 from above the
-first point or starting 3-8 km below it, or changing from 0.05 to 0.5 s^2/km^2 5 km below it, did not bias the
-velocity: over 170 distinct fits of 1 s or of all points, its error over its uncertainty had a mean of -0.05, and it
-differed from the error of the same meteoroid without erosion, over the same points and noise, by +0.28 of the
-uncertainty on average and by at most 3.0. Strong erosion makes the uncertainty somewhat too small: the RMS of the
-error over the uncertainty was 1.18, and 1.23 with eta = 0.3, against 1.00 without erosion over the same points,
-with 88% of the fits within 2 sigma against 94%. The fitted sigma was sigma + eta when the points cover enough of
-the deceleration, e.g. 0.105 and 0.30 s^2/km^2 for eta = 0.1 and 0.3 at 20 km/s fitting all points, but 0.18-0.23
-for 0.31 over the shorter spans at 30 km/s. Over 1 s sigma is often poorly constrained: without erosion it ended at
-one of its bounds in 9-10 of 20 fits, while the velocity uncertainty stayed calibrated (RMS of the error over it
-0.91-1.01), so sigma does not flag the problems below. All these tests use MetSim both as the truth and as the
-model: they show the fit absorbs MetSim's erosion of the body, not that a real meteoroid erodes that way.
+first point or starting 3-8 km below it, or changing from 0.05 to 0.5 s^2/km^2 5 km below it, so active over most of
+the fitted points, did not bias the velocity: over 170 distinct fits of 1 s or of all points, its error over its
+uncertainty had a mean of -0.05, and it differed from the error of the same meteoroid without erosion, over the same
+points and noise, by +0.28 of the uncertainty on average and by at most 3.0. Strong erosion makes the uncertainty
+somewhat too small: the RMS of the error over the uncertainty was 1.18, and 1.23 with eta = 0.3, against 1.00
+without erosion over the same points, with 88% of the fits within 2 sigma against 94%. The fitted sigma was sigma +
+eta when the points cover enough of the deceleration, e.g. 0.105 and 0.30 s^2/km^2 for eta = 0.1 and 0.3 at 20 km/s
+fitting all points, but 0.18-0.23 for 0.31 over the shorter spans at 30 km/s. Over 1 s sigma is often poorly
+constrained: without erosion it ended at one of its bounds in 9-10 of 20 fits, while the velocity uncertainty stayed
+calibrated (RMS of the error over it 0.91-1.01), so sigma does not flag the problems below. All these tests use
+MetSim both as the truth and as the model: they show the fit absorbs MetSim's erosion of the body, not that a real
+meteoroid erodes that way.
 
-A fragmentation is not described, and the fit does not detect it: its RMS stays below the straight line's. In
-synthetic tests (20 and 30 km/s, first seen at 55 and 70 km), the main body losing 50-80% of its mass 10-20 km below
-the first point biased the velocity by 40-480 m/s, 5-29 times its uncertainty, and erosion with eta = 0.1-0.3
-s^2/km^2 starting 10 km below by up to 110 m/s, 5 times; fitting only the points above the event, all were within
-their uncertainty. Hence the fitted part ends at a time or a height, which should be before the first
-fragmentation, e.g. from the light curve. Without fragmentation, on the true lengths of 35 synthetic meteoroids,
-the uncertainty of the velocity had a median of 97, 33 and 9 m/s fitting 0.5 s, 1 s and all points.
+A fragmentation is not described, and the fit does not detect it: its RMS stays below the straight line's. Erosion
+that starts within the fitted part, after a stretch without it, acts alike. In synthetic tests (20 and 30 km/s,
+first seen at 55 and 70 km), the main body losing 50-80% of its mass 10-20 km below the first point biased the
+velocity by 40-480 m/s, 5-29 times its uncertainty. With erosion of eta = 0.1 s^2/km^2 starting 10 km below the
+first point (truth integrated with 0.1 ms steps, ten noise realizations), fitting all points biased it by -357 m/s,
+20 times its uncertainty, for 20 km/s and 1 kg first seen at 55 km and fitted down to 40 km, and by 16 m/s below the
+same fit without erosion, 3 times its uncertainty, first seen at 70 km and fitted down to 46 km. The 1 s fits, which
+ended within 4.5 km below the start of the erosion, had a mean error over their uncertainty of -0.1 to -0.8 in all
+eight cases (eta = 0.1 and 0.3, 20 and 30 km/s, first seen at 55 and 70 km). Fitting only the points above a
+fragmentation, all were within their uncertainty. Hence the fitted part ends at a time or a height, which should be
+before the first fragmentation, e.g. from the light curve. Without fragmentation, on the true lengths of 35
+synthetic meteoroids, the uncertainty of the velocity had a median of 97, 33 and 9 m/s fitting 0.5 s, 1 s and all
+points.
 
 The lengths must follow the body. The solver measures the centroid of the light, which with erosion includes the
 wake of the grains slowing down behind the body as they ablate. The fit takes the change of that lag for
@@ -103,14 +114,8 @@ from wmpl.Utils.AtmosphereDensity import fitAtmPoly
 # Default time limit of the fitted points from the reference time (s)
 DEFAULT_TIME_LIMIT = 1.0
 
-# The straight line is kept if the drag fit's velocity is within this many of its uncertainties of it: the
-#   squared difference minus the drag fit's variance estimates the straight line's squared bias, so below
-#   sqrt(2) uncertainties the straight line has the smaller expected squared error
-LINE_PREFERRED_SIGMA = math.sqrt(2)
-
 # A curvature of the lengths the straight line was fitted to that puts the velocity at the first point this many
-#   uncertainties above the straight line's is reported. Through the solver, no meteoroid without measurable
-#   deceleration came out above 1.5
+#   uncertainties above the straight line's is reported (see the module docstring for how it did)
 LINE_BIAS_SIGMA = 2.0
 
 class DragVelocityFit(object):
@@ -149,9 +154,6 @@ class DragVelocityFit(object):
         self.ht_range = ht_range
         self.t_range = t_range
 
-        # The drag fit does not measure a bias of the straight line, which is then the more precise estimate
-        self.line_preferred = abs(v_init - v_init_linear) < LINE_PREFERRED_SIGMA*v_init_stddev
-
 
 class LineBias(object):
     def __init__(self, bias, bias_stddev, n_points, t_range):
@@ -181,7 +183,8 @@ def estimateLineBias(traj):
     the one at its start. The parabola measures the deceleration over those points, and its velocity at the
     reference time is compared with the straight line's. It is cheap and needs no model, so the solver gives it
     when the drag fit is off, and reports it when it is significant (see LINE_BIAS_SIGMA). It is a rough estimate:
-    through the solver, on synthetic meteoroids whose straight line was 49-617 m/s low, it gave 1.1-1.8 times that.
+    through the solver, where it warned for synthetic meteoroids whose straight line was 70-930 m/s low, it gave
+    1.0-2.0 times that.
 
     Arguments:
         traj: [Trajectory] Solved trajectory, with velocity_fit and velocity_fit_t_range.
