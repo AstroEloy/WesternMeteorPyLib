@@ -225,6 +225,25 @@ def test_without_the_drag_fit_the_solver_warns_when_the_straight_line_is_low():
     assert bias is not None and not bias.significant
 
 
+def test_a_drag_fit_that_is_not_used_is_reported_with_its_reason():
+    """ Asked for over the first 0.05 s, the drag fit has too few points: the solver keeps the straight line, says
+        why, and the report says so; a trajectory without the option reports nothing about it. """
+
+    traj = _solve(24000.0, 5.3e-3, 0.005, 60e3, 45.0, v_init_drag=True, v_init_drag_time=0.05)
+    line = _solve(24000.0, 5.3e-3, 0.005, 60e3, 45.0, v_init_drag=False)
+
+    assert traj.v_init_drag_fit is None and traj.v_init == line.v_init
+    assert "points in the fitted part, not more than its" in traj.v_init_drag_rejection
+    assert traj.v_init_drag_rejection in traj._dragFitRejectedText()
+
+    example = loadPickle(EXAMPLE_DIR, EXAMPLE_PICKLE)
+    assert "--vinitdrag" not in example.saveReport(".", "unused.txt", verbose=False, save_results=False)
+    example.v_init_drag, example.v_init_drag_rejection = True, "the fit did not converge"
+    report = example.saveReport(".", "unused.txt", verbose=False, save_results=False)
+    assert "(--vinitdrag) was not used: the fit did not converge, so the initial velocity is the straight " \
+        "line's." in report
+
+
 def test_option_is_off_by_default_and_in_old_pickles():
     """ The solver does not fit the drag unless asked, and a trajectory pickled before the option existed loads with
         it off, so its report is unchanged. """
@@ -234,6 +253,7 @@ def test_option_is_off_by_default_and_in_old_pickles():
     traj = loadPickle(EXAMPLE_DIR, EXAMPLE_PICKLE)
     assert traj.v_init_drag is False and traj.v_init_drag_fit is None
     assert traj.v_init_line_bias is None
+    assert traj.v_init_drag_rejection is None
 
 
 if __name__ == "__main__":
@@ -243,5 +263,6 @@ if __name__ == "__main__":
     test_drag_fit_of_a_meteoroid_that_ablates_until_it_stops_does_not_depend_on_metsim_step()
     test_drag_fit_keeps_the_velocity_of_a_meteor_that_does_not_decelerate()
     test_without_the_drag_fit_the_solver_warns_when_the_straight_line_is_low()
+    test_a_drag_fit_that_is_not_used_is_reported_with_its_reason()
     test_option_is_off_by_default_and_in_old_pickles()
     print("All DragInitialVelocity checks passed.")

@@ -2567,6 +2567,9 @@ class Trajectory(object):
         self.v_init_drag_ht = v_init_drag_ht
         self.v_init_drag_fit = None
 
+        # Why the drag fit was not used, if it was asked for and is None
+        self.v_init_drag_rejection = None
+
         # Without the drag fit, the estimated bias of the straight-line initial velocity from the curvature of
         #   the lengths it was fitted to (see wmpl.Utils.DragInitialVelocity.estimateLineBias)
         self.v_init_line_bias = None
@@ -4307,6 +4310,15 @@ class Trajectory(object):
         return out_str
 
 
+    def _dragFitRejectedText(self):
+        """ Text saying that the drag fit of the initial velocity was asked for but not used, and why. """
+
+        reason = getattr(self, "v_init_drag_rejection", None)
+
+        return ("The drag and ablation fit of the initial velocity (--vinitdrag) was not used{:s}, so the initial "
+            "velocity is the straight line's.").format("" if reason is None else ": " + reason)
+
+
     def _lineBiasWarning(self):
         """ Text of the warning that the straight line underestimates the initial velocity (see
             wmpl.Utils.DragInitialVelocity.estimateLineBias). """
@@ -4487,6 +4499,9 @@ class Trajectory(object):
                 fit.drag_coeff)
             out_str += "  RMS   = {:.2f} m (straight line: {:.2f} m)\n".format(fit.rms, fit.rms_linear)
             out_str += "\n"
+
+        elif getattr(self, "v_init_drag", False):
+            out_str += self._dragFitRejectedText() + "\n\n"
 
         if (getattr(self, "v_init_line_bias", None) is not None) and self.v_init_line_bias.significant:
             out_str += "WARNING: " + self._lineBiasWarning() + "\n\n"
@@ -6668,8 +6683,9 @@ class Trajectory(object):
         #   (optional), as the straight line fitted to the first part underestimates it for a meteor that already
         #   decelerates there
         if self.v_init_drag:
-            self.v_init_drag_fit = fitDragInitialVelocity(self, t_max=self.v_init_drag_time,
-                ht_min=(None if self.v_init_drag_ht is None else 1000*self.v_init_drag_ht))
+            self.v_init_drag_fit, self.v_init_drag_rejection = fitDragInitialVelocity(self,
+                t_max=self.v_init_drag_time,
+                ht_min=(None if self.v_init_drag_ht is None else 1000*self.v_init_drag_ht), return_reason=True)
 
             # Keep the straight-line velocity if the fit failed or does not fit better
             if self.v_init_drag_fit is not None:
@@ -6685,8 +6701,7 @@ class Trajectory(object):
                 self.jacchia_fit = self.fitJacchiaLag(self.observations)
 
             elif self.verbose:
-                print("The drag fit of the initial velocity did not converge or fit better than the straight line, "
-                    "keeping the straight-line initial velocity.")
+                print(self._dragFitRejectedText())
 
         # Without the drag fit, estimate whether the straight line underestimates the initial velocity
         elif self.v_init_ht is None:

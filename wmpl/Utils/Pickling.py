@@ -104,6 +104,10 @@ def loadPickle(dir_path, file_name):
             p.v_init_drag_ht = None
             p.v_init_drag_fit = None
 
+        # If the reason for not using the drag fit is missing, add it as unknown
+        if not hasattr(p, 'v_init_drag_rejection'):
+            p.v_init_drag_rejection = None
+
         # If the estimated bias of the straight-line initial velocity is missing, add it as not computed
         if not hasattr(p, 'v_init_line_bias'):
             p.v_init_line_bias = None

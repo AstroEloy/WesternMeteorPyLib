@@ -246,7 +246,7 @@ def _metsimLengths(const, v0, drag_coeff, sigma, t_lo, t_hi, v_rotation):
     return times[order], lengths[order] + v_rotation*times[order]
 
 
-def fitDragInitialVelocity(traj, ht_min=None, t_max=None, fine_dt=0.001):
+def fitDragInitialVelocity(traj, ht_min=None, t_max=None, fine_dt=0.001, return_reason=False):
     """ Fit the single-body drag and ablation model to the lengths of the non-ignored points of a solved
         trajectory above a height and before a time (see the module docstring).
 
@@ -259,11 +259,16 @@ def fitDragInitialVelocity(traj, ht_min=None, t_max=None, fine_dt=0.001):
             trajectory, are fitted (s). None by default, for no limit.
         fine_dt: [float] The larger of the two MetSim time steps whose fits are extrapolated to a zero step (s).
             The starting fit uses MetSim's default step.
+        return_reason: [bool] Also return why the fit is None, so it can be reported. False by default.
 
     Return:
         [DragVelocityFit] or None if there are not more points than parameters, or the fit did not converge or
-            does not fit better than the straight line.
+            does not fit better than the straight line. With return_reason, (fit, reason), the reason being None
+            when the fit is returned.
     """
+
+    def rejected(reason):
+        return (None, reason) if return_reason else None
 
     ref_id = traj.observations[traj.t_ref_station].station_id
 
@@ -279,7 +284,7 @@ def fitDragInitialVelocity(traj, ht_min=None, t_max=None, fine_dt=0.001):
         lengths.append(obs.state_vect_dist[good])
         heights.append(obs.model_ht[good])
     if not observations:
-        return None
+        return rejected("no points in the fitted part")
     times, lengths, heights = np.concatenate(times), np.concatenate(lengths), np.concatenate(heights)
     station_index = np.concatenate(station_index)
 
@@ -289,7 +294,8 @@ def fitDragInitialVelocity(traj, ht_min=None, t_max=None, fine_dt=0.001):
     if len(offset_stations) == len(observations):
         offset_stations = offset_stations[1:]
     if len(times) <= 4 + len(offset_stations):
-        return None
+        return rejected("{:d} points in the fitted part, not more than its {:d} parameters".format(len(times),
+            4 + len(offset_stations)))
 
     # MetSim starts from the solver's state vector, relative to the ground, with the air density over the heights
     #   the meteor reaches. The bulk density only scales the mass that B gives, so its value does not matter
@@ -342,8 +348,11 @@ def fitDragInitialVelocity(traj, ht_min=None, t_max=None, fine_dt=0.001):
 
     # The straight line is the model without drag, so a worse fit than it means the fit went wrong
     rms = np.sqrt(np.mean(best.fun**2))
-    if (best.status <= 0) or (not np.all(np.isfinite(params))) or (rms > rms_linear):
-        return None
+    if (best.status <= 0) or (not np.all(np.isfinite(params))):
+        return rejected("the fit did not converge")
+    if rms > rms_linear:
+        return rejected("it fits worse than the straight line (RMS {:.2f} m against {:.2f} m)".format(rms,
+            rms_linear))
 
     # Formal uncertainties from the Jacobian, scaled by the residual variance
     dof = max(len(lengths) - len(params), 1)
@@ -354,6 +363,8 @@ def fitDragInitialVelocity(traj, ht_min=None, t_max=None, fine_dt=0.001):
     for k, i in enumerate(offset_stations):
         time_offsets[observations[i].station_id] = params[4 + k]
 
-    return DragVelocityFit(params[0], stddev[0], params[2], math.exp(params[1]), params[3], stddev[3],
+    fit_result = DragVelocityFit(params[0], stddev[0], params[2], math.exp(params[1]), params[3], stddev[3],
         time_offsets, rms, v_lin, rms_linear, len(times), (np.min(heights), np.max(heights)),
         (np.min(times), np.max(times)))
+
+    return (fit_result, None) if return_reason else fit_result
