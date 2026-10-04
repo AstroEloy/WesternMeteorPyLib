@@ -19,7 +19,8 @@ from wmpl.MetSim.BackwardAtmIntegration import addBackwardArguments, backwardCon
 from wmpl.MetSim.MetSimErosion import Constants, Fragment, runSimulation
 from wmpl.Rebound.REBOUND import sampleStateVectors
 from wmpl.Utils.Pickling import loadPickle, savePickle
-from wmpl.Utils.TrajConversions import cartesian2Geo
+from wmpl.Utils.AtmosphereDensity import fitAtmPoly
+from wmpl.Utils.TrajConversions import altAz2RADec, cartesian2Geo, geo2Cartesian, raDec2ECI
 
 
 # A solved trajectory shipped with the repository (2019-10-23, four stations, 67 km/s, reference point at 116 km),
@@ -137,7 +138,7 @@ def test_command_line_arguments_set_the_mass_and_the_physical_parameters():
     traj, state_vect = _exampleStart()
 
     def run(*argv):
-        (_, states, masses), m_inits = backwardStatesFromArguments(traj, [state_vect],
+        (_, states, masses), m_inits, _ = backwardStatesFromArguments(traj, [state_vect],
             _parseArguments("--mass", "1e-6", *argv), 180000.0)
         return m_inits[0], masses[0], np.linalg.norm(states[0][3:])
 
@@ -156,7 +157,7 @@ def test_gamma_a_sets_the_drag_as_metsims_gamma_times_shape_factor():
 
     traj, state_vect = _exampleStart()
 
-    (_, states, masses), _ = backwardStatesFromArguments(traj, [state_vect],
+    (_, states, masses), _, _ = backwardStatesFromArguments(traj, [state_vect],
         _parseArguments("--mass", "1e-6", "--ga", "0.55"), 180000.0)
 
     const = Constants()
@@ -166,7 +167,7 @@ def test_gamma_a_sets_the_drag_as_metsims_gamma_times_shape_factor():
     assert np.allclose(states[0], states_direct[0], rtol=1e-12, atol=1e-6)
     assert np.isclose(masses[0], masses_direct[0], rtol=1e-12, atol=0)
 
-    (_, states_more, _), _ = backwardStatesFromArguments(traj, [state_vect],
+    (_, states_more, _), _, _ = backwardStatesFromArguments(traj, [state_vect],
         _parseArguments("--mass", "1e-6", "--ga", "1.21"), 180000.0)
     assert np.linalg.norm(states_more[0][3:]) > np.linalg.norm(states[0][3:])
 
@@ -182,7 +183,7 @@ def test_mass_uncertainty_spreads_the_masses_of_the_realizations():
     traj.state_vect_cov = np.diag([50.0**2]*6)
     realizations = sampleStateVectors(traj, 2000, random_seed=5)
 
-    (_, states, _), m_inits = backwardStatesFromArguments(traj, [state_vect] + realizations,
+    (_, states, _), m_inits, _ = backwardStatesFromArguments(traj, [state_vect] + realizations,
         _parseArguments("--mass", "1e-3", "--mass_sigma", "4e-4"), 180000.0, random_seed=5)
     masses = np.array(m_inits[1:])
 
@@ -190,19 +191,114 @@ def test_mass_uncertainty_spreads_the_masses_of_the_realizations():
     assert abs(np.mean(masses)/1e-3 - 1) < 0.02 and abs(np.std(masses)/4e-4 - 1) < 0.05
     assert np.array_equal(realizations, sampleStateVectors(traj, 2000, random_seed=5))
 
-    (_, _, _), m_inits_none = backwardStatesFromArguments(traj, [state_vect] + realizations[:3],
+    (_, _, _), m_inits_none, _ = backwardStatesFromArguments(traj, [state_vect] + realizations[:3],
         _parseArguments("--mass", "1e-3"), 180000.0, random_seed=5)
     assert m_inits_none == [1e-3]*4
 
 
+def test_erosion_of_the_body_is_undone_by_running_back_with_sigma_plus_eta():
+    """ 1 kg at 20 km/s, 45 deg from the zenith, run forwards from 90 km for 1.3 s by MetSim with sigma = 0.023 and
+        erosion eta = 0.3 s^2/km^2 (grains of 1e-4 to 1e-3 kg), keeps 42% of its mass. Run back from where its
+        body ended with sigma + eta it comes back to 1 kg and 20 km/s within 8e-4 and 7e-6, the first-order error
+        of the 0.5 ms steps, while with sigma alone it comes back with 45% of the mass and 20 m/s faster, as the
+        smaller body slows down more. """
+
+    traj, _ = _exampleStart()
+    lat, lon = np.radians(45.0), np.radians(15.0)
+    jd = traj.jdt_ref
+    p0 = np.array(geo2Cartesian(lat, lon, 90e3, jd))
+    ra, dec = altAz2RADec(np.radians(90.0), np.radians(45.0), jd, lat, lon)
+    state_top = np.r_[p0, 20000.0*np.array(raDec2ECI(ra, dec))]
+
+    const = backwardConstants(jd, state_top, 1.0, h_kill=95e3)
+    const.dens_co = fitAtmPoly(lat, lon, 40e3, 95e3, jd)
+    const.dt, const.h_kill, const.t_kill, const.v_kill = 0.0005, 20e3, 1.3, 100.0
+    const.erosion_on, const.erosion_height_start, const.erosion_coeff = True, 95e3, 0.3e-6
+    const.erosion_height_change, const.erosion_mass_min, const.erosion_mass_max = -1.0, 1e-4, 1e-3
+    frag, results, _ = runSimulation(const)
+    t = results[-1][0]
+    jd_end, state_end = backwardState(jd, state_top, frag, t)
+
+    def back(sigma):
+        const_back = Constants()
+        const_back.sigma, const_back.rho, const_back.dt = sigma, const.rho, -0.0005
+        cb = backwardConstants(jd_end, state_end, frag.m, h_kill=95e3, const=const_back)
+        cb.dens_co, cb.t_kill = const.dens_co, t
+        frag_back, results_back, _ = runSimulation(cb)
+        return frag_back.m, np.linalg.norm(backwardState(jd_end, state_end, frag_back, results_back[-1][0])[1][3:])
+
+    m_eta, v_eta = back(0.323e-6)
+    m_sigma, v_sigma = back(0.023e-6)
+
+    assert 0.35 < frag.m < 0.5
+    assert abs(m_eta - 1) < 1.5e-3 and abs(v_eta/20000.0 - 1) < 2e-5
+    assert m_sigma < 0.5 and (v_sigma - 20000.0) > 10.0
+
+
+def test_ablation_coefficient_uncertainty_spreads_the_coefficients_of_the_realizations():
+    """ With --ablation_coeff_sigma each realization runs with its own coefficient, log-normal with mean
+        --ablation_coeff: 2000 of 0.1 +/- 0.05 s^2/km^2 have a mean within 3% and a standard deviation within 6%.
+        The nominal coefficient, the masses and the state vectors are those without it, and each realization ends
+        as a run with its own coefficient does, with more mass than with --ablation_coeff if its own is larger. """
+
+    traj, state_vect = _exampleStart()
+    traj.uncertainties = SimpleNamespace()
+    traj.state_vect_cov = np.diag([50.0**2]*6)
+    realizations = sampleStateVectors(traj, 2000, random_seed=5)
+    argv = ["--mass", "1e-3", "--mass_sigma", "4e-4", "--ablation_coeff", "0.1"]
+
+    (_, _, masses_fixed), m_inits_fixed, sigmas_fixed = backwardStatesFromArguments(traj,
+        [state_vect] + realizations[:3], _parseArguments(*argv), 180000.0, random_seed=5)
+    assert sigmas_fixed == [0.1]*4
+
+    # Only the first realizations are run; the draws of the others are checked
+    args = _parseArguments(*(argv + ["--ablation_coeff_sigma", "0.05"]))
+    rng = np.random.default_rng([2, 5])
+    sigma_ln = np.sqrt(np.log(1 + 0.5**2))
+    draws = 0.1*np.exp(sigma_ln*rng.normal(size=2000) - sigma_ln**2/2)
+    assert abs(np.mean(draws)/0.1 - 1) < 0.03 and abs(np.std(draws)/0.05 - 1) < 0.06
+
+    (_, states, masses), m_inits, sigmas = backwardStatesFromArguments(traj, [state_vect] + realizations[:3], args,
+        180000.0, random_seed=5)
+    assert sigmas[0] == 0.1 and np.allclose(sigmas[1:], draws[:3], rtol=1e-12)
+    assert m_inits == m_inits_fixed
+
+    const = Constants()
+    const.rho = 3000.0
+    _, states_own, masses_own = backwardStates(traj.jdt_ref, [state_vect] + realizations[:3], m_inits,
+        const=const, sigmas=[sigma/1e6 for sigma in sigmas])
+    assert np.allclose(states, states_own, rtol=1e-12, atol=1e-6) and np.allclose(masses, masses_own, rtol=1e-12)
+
+    for m, m_fixed, sigma in zip(masses[1:], masses_fixed[1:], sigmas[1:]):
+        assert (m > m_fixed) == (sigma > 0.1)
+
+
+def test_command_line_reports_the_run_with_ceplechas_types_when_the_coefficient_is_not_drawn(capsys):
+    """ Without --ablation_coeff_sigma, the nominal run is also reported with the apparent coefficients of
+        Ceplecha's types I and IIIB, and not with it or with a frozen mass. """
+
+    traj, state_vect = _exampleStart()
+
+    backwardStatesFromArguments(traj, [state_vect], _parseArguments("--mass", "1e-3"), 180000.0)
+    out = capsys.readouterr().out
+    assert "with 0.014" in out and "with 0.21" in out
+
+    for argv in [["--ablation_coeff_sigma", "0.01"], ["--freeze_mass"]]:
+        backwardStatesFromArguments(traj, [state_vect], _parseArguments("--mass", "1e-3", *argv), 180000.0)
+        assert "Ceplecha" not in capsys.readouterr().out
+
+
 def test_command_line_refuses_a_mass_the_run_cannot_start_from():
-    """ A missing, zero or negative --mass, or a negative --mass_sigma, is a command-line error instead of a
-        division by zero or a complex power deep in MetSim. """
+    """ A missing, zero or negative --mass, a negative --mass_sigma, --ablation_coeff or --ablation_coeff_sigma,
+        or a spread around a zero coefficient, is a command-line error instead of a division by zero or a complex
+        power deep in MetSim. """
 
     parser = argparse.ArgumentParser()
     addBackwardArguments(parser)
 
-    for argv in [[], ["--mass", "0"], ["--mass", "-1"], ["--mass", "1", "--mass_sigma", "-0.1"]]:
+    for argv in [[], ["--mass", "0"], ["--mass", "-1"], ["--mass", "1", "--mass_sigma", "-0.1"],
+            ["--mass", "1", "--ablation_coeff", "-0.1"], ["--mass", "1", "--ablation_coeff_sigma", "-0.1"],
+            ["--mass", "1", "--ablation_coeff", "0", "--ablation_coeff_sigma", "0.1"]]:
         with pytest.raises(SystemExit):
             checkBackwardArguments(parser, parser.parse_args(argv))
 
@@ -228,8 +324,9 @@ def test_command_line_saves_the_nominal_solution_and_its_realizations(tmp_path, 
     _, states, masses = backwardStates(traj.jdt_ref, [state_vect] + sampleStateVectors(traj, 3, 1), rows[:, 1],
         const=const)
 
-    assert rows.shape == (4, 13) and rows[0, 1] == 1e-3 and len(set(rows[:, 1])) == 4
-    assert np.allclose(rows[:, 7:], states, rtol=1e-9, atol=1e-6) and np.allclose(rows[:, 6], masses, rtol=1e-9)
+    assert rows.shape == (4, 14) and rows[0, 1] == 1e-3 and len(set(rows[:, 1])) == 4
+    assert np.allclose(rows[:, 7:13], states, rtol=1e-9, atol=1e-6) and np.allclose(rows[:, 6], masses, rtol=1e-9)
+    assert np.all(rows[:, 13] == Constants().sigma*1e6)
 
 
 if __name__ == "__main__":
@@ -240,5 +337,7 @@ if __name__ == "__main__":
     test_command_line_arguments_set_the_mass_and_the_physical_parameters()
     test_gamma_a_sets_the_drag_as_metsims_gamma_times_shape_factor()
     test_mass_uncertainty_spreads_the_masses_of_the_realizations()
+    test_erosion_of_the_body_is_undone_by_running_back_with_sigma_plus_eta()
+    test_ablation_coefficient_uncertainty_spreads_the_coefficients_of_the_realizations()
     test_command_line_refuses_a_mass_the_run_cannot_start_from()
     print("All BackwardAtmIntegration checks passed.")

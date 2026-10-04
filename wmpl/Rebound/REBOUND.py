@@ -2557,7 +2557,7 @@ if __name__ == "__main__":
     state_vect = np.concatenate([traj.state_vect_mini, traj.v_init*traj.radiant_eci_mini])
     state_vect_realizations = sampleStateVectors(traj, args.mc, random_seed)
     if args.atm_height is not None:
-        (jd_start, states, masses), m_inits = backwardStatesFromArguments(traj,
+        (jd_start, states, masses), m_inits, _ = backwardStatesFromArguments(traj,
             [state_vect] + state_vect_realizations, args, 1000*args.atm_height, random_seed=random_seed)
         state_vect, state_vect_realizations = states[0], states[1:]
         print("Ran {:d} state vector(s) back through the atmosphere for {:.3f} s, to {:.1f} km, from {:.6g} kg "

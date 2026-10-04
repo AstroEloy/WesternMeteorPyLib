@@ -44,9 +44,10 @@ class Constants(object):
         ### Simulation parameters ###
 
         # Time step (s). A negative step runs the simulation backwards in time, from a state observed lower down back
-        #   up the trajectory, with the mass growing as the ablation is undone. Erosion, disruption and fragmentation
-        #   cannot be undone, so a backward run needs them off, and h_kill is then the height to stop at, above
-        #   h_init
+        #   up the trajectory, with the mass growing as the ablation is undone. The grains and fragments released by
+        #   erosion, disruption and fragmentation cannot be undone, so a backward run needs them off; the erosion of
+        #   the body itself follows the ablation law, so it is undone by running with sigma + eta. h_kill is then
+        #   the height to stop at, above h_init
         self.dt = 0.005
 
         # Time elapsed since the beginning

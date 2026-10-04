@@ -10,6 +10,27 @@ From the command line, to a height or for a time, with or without Monte Carlo re
 
 State vectors are [x, y, z, vx, vy, vz] in ECI (true equator and equinox of date), in m and m/s, with the
 velocity pointing to the radiant, as the solver gives them and reboundSimulate() takes them.
+
+The run follows a single body, whose mass grows back as dm = sigma m v dv. MetSim erodes the body with the same
+law as it ablates it, so its erosion is undone by giving the effective coefficient sigma + eta: only the eroded
+grains, which are not followed, cannot be undone. The coefficient should then be the meteoroid's apparent one, as
+fitted to its deceleration (e.g. by DynamicMassFit, AlphaBeta or the trajectory solver's --vinitdrag over all its
+points), which includes its erosion; for fireballs, Ceplecha et al. (1998) give 0.014, 0.042, 0.10 and 0.21
+s^2/km^2 for types I, II, IIIA and IIIB, and single bright meteors range from 0.001 to 0.19 s^2/km^2 (Silber et
+al. 2015). It matters when the run starts deep. Run back to 180 km, the speed there relative to a run with a frozen
+mass, and the mass there over the starting one, were, for sigma = 0.023 and sigma + eta = 0.123 and 0.323 s^2/km^2:
+
+| Start | Speed change (m/s) | Mass ratio |
+|---|---|---|
+| 1 g at 30 km/s from 100 km | 0.0, 0.0, -0.1 | 1.01, 1.03, 1.09 |
+| 1 kg at 20 km/s from 70 km | -0.4, -2.3, -5.7 | 1.04, 1.2, 1.6 |
+| 1 kg at 15 km/s from 60 km, 60 deg from the zenith | -8, -37, -81 | 1.14, 1.9, 4.2 |
+| 1 kg at 20 km/s from 50 km | -129, -455, -730 | 1.8, 9.8, 62 |
+
+Where the erosion starts above the first point hardly matters: starting 10 km above it instead of at the top of
+the atmosphere changed the speed by 9.5 m/s of the 730. When the coefficient is uncertain, --ablation_coeff_sigma
+draws one for each Monte Carlo realization; otherwise the command lines also report the nominal run with the
+coefficients of types I and IIIB.
 """
 
 import argparse
@@ -108,7 +129,7 @@ def backwardState(jd_ref, state_vect, frag, t):
     return jd, np.concatenate([pos, -vel])
 
 
-def backwardStates(jd_ref, state_vects, m_init, h_kill=180000.0, t_kill=-1, const=None):
+def backwardStates(jd_ref, state_vects, m_init, h_kill=180000.0, t_kill=-1, const=None, sigmas=None):
     """ Run several state vectors back through the atmosphere to a common epoch, so the nominal solution and its
         Monte Carlo realizations can go into reboundSimulate() together. The first state vector, the nominal one,
         is run up to h_kill, or for t_kill seconds if it is given and h_kill is not reached first, and the others
@@ -122,6 +143,8 @@ def backwardStates(jd_ref, state_vects, m_init, h_kill=180000.0, t_kill=-1, cons
     Keyword arguments:
         h_kill, const: As in backwardConstants().
         t_kill: [float] Time to run back for (s). -1, the default, runs back to h_kill.
+        sigmas: [list] Ablation coefficient of each state vector (s^2/m^2, MetSim's units). None by default, for
+            const.sigma for all of them.
 
     Return:
         (jd, state_vects, masses): The common Julian date, and the state vectors and masses (kg) there, in the same
@@ -131,6 +154,9 @@ def backwardStates(jd_ref, state_vects, m_init, h_kill=180000.0, t_kill=-1, cons
     m_inits = [m_init]*len(state_vects) if np.ndim(m_init) == 0 else m_init
 
     const = backwardConstants(jd_ref, state_vects[0], m_inits[0], h_kill=h_kill, const=const)
+    if sigmas is None:
+        sigmas = [const.sigma]*len(state_vects)
+    const.sigma = sigmas[0]
     const.t_kill = t_kill
     frag, results, _ = runSimulation(const)
     t = results[-1][0]
@@ -141,10 +167,10 @@ def backwardStates(jd_ref, state_vects, m_init, h_kill=180000.0, t_kill=-1, cons
     #   steps, and keep its atmosphere fit, made at practically the same place
     const.h_kill, const.t_kill = np.inf, abs(t)
 
-    for sv, m in zip(state_vects[1:], m_inits[1:]):
+    for sv, m, sigma in zip(state_vects[1:], m_inits[1:], sigmas[1:]):
 
         const_mc = copy.deepcopy(const)
-        const_mc.m_init = m
+        const_mc.m_init, const_mc.sigma = m, sigma
         _startFrom(const_mc, jd_ref, sv)
         frag, results, _ = runSimulation(const_mc)
 
@@ -174,9 +200,16 @@ def addBackwardArguments(arg_parser):
         help="Keep the mass constant instead of growing it back as the ablation is undone.")
 
     arg_parser.add_argument("--ablation_coeff", type=float, default=Constants().sigma*1e6,
-        help="Ablation coefficient in s^2/km^2: the mass lost for the kinetic energy lost to the drag "
-        "(dm = sigma m v dv), so it sets how fast the mass grows back. Default: MetSim's, {:g}.".format(
+        help="Effective ablation coefficient in s^2/km^2: the mass lost for the kinetic energy lost to the drag "
+        "(dm = sigma m v dv), so it sets how fast the mass grows back. It includes the erosion of the body "
+        "(sigma + eta), so it is best the meteoroid's apparent coefficient, fitted to its deceleration; Ceplecha's "
+        "fireball types I, II, IIIA and IIIB have 0.014, 0.042, 0.10 and 0.21. Default: MetSim's, {:g}.".format(
         Constants().sigma*1e6))
+
+    arg_parser.add_argument("--ablation_coeff_sigma", type=float, default=0.0,
+        help="1-sigma uncertainty of --ablation_coeff in s^2/km^2. Each Monte Carlo realization runs with a "
+        "coefficient drawn from a log-normal distribution with --ablation_coeff as its mean and this standard "
+        "deviation. Default: 0.")
 
     arg_parser.add_argument("--density", type=float, default=3000.0,
         help="Bulk density of the meteoroid in kg/m^3, which with the mass sets the drag, and in REBOUND the "
@@ -197,14 +230,45 @@ def checkBackwardArguments(arg_parser, args):
     if args.mass_sigma < 0:
         arg_parser.error("--mass_sigma cannot be negative.")
 
+    if args.ablation_coeff < 0:
+        arg_parser.error("--ablation_coeff cannot be negative.")
+
+    if args.ablation_coeff_sigma < 0:
+        arg_parser.error("--ablation_coeff_sigma cannot be negative.")
+
+    if (args.ablation_coeff_sigma > 0) and (args.ablation_coeff == 0):
+        arg_parser.error("--ablation_coeff_sigma needs a positive --ablation_coeff, the mean it is drawn around.")
+
+
+# Apparent ablation coefficients of Ceplecha's fireball types I and IIIB (s^2/km^2), the range the command lines
+#   report the nominal run for when the coefficient is not drawn
+CEPLECHA_SIGMA_RANGE = (0.014, 0.21)
+
+
+def _logNormal(rng, mean, stddev, n):
+    """ n draws from a log-normal distribution with the given mean and standard deviation, all positive. """
+
+    sigma_ln = np.sqrt(np.log(1 + (stddev/mean)**2))
+
+    return list(mean*np.exp(sigma_ln*rng.normal(size=n) - sigma_ln**2/2))
+
 
 def backwardStatesFromArguments(traj, state_vects, args, h_kill, t_kill=-1, random_seed=None):
     """ backwardStates() from the trajectory's reference point, with the mass and physical parameters given by the
-        command-line arguments of addBackwardArguments(). The masses of the realizations are drawn with
-        random_seed from --mass and --mass_sigma. Also returns the starting masses. """
+        command-line arguments of addBackwardArguments(). The masses and ablation coefficients of the
+        realizations are drawn with random_seed from --mass and --mass_sigma, and from --ablation_coeff and
+        --ablation_coeff_sigma. Also returns the starting masses and the ablation coefficients (s^2/km^2).
+
+    If the coefficient is not drawn and the mass is not frozen, it also prints the speed and mass of the nominal
+    run with the apparent coefficients of Ceplecha's fireball types I and IIIB, so the effect of the erosion and
+    fragmentation above the first point can be seen.
+    """
 
     if (args.mass_sigma > 0) and (len(state_vects) == 1):
         print("--mass_sigma has no effect without Monte Carlo realizations.")
+
+    if (args.ablation_coeff_sigma > 0) and (len(state_vects) == 1):
+        print("--ablation_coeff_sigma has no effect without Monte Carlo realizations.")
 
     const = Constants()
     const.freeze_mass = args.freeze_mass
@@ -216,11 +280,35 @@ def backwardStatesFromArguments(traj, state_vects, args, h_kill, t_kill=-1, rand
 
     # Log-normal with mean args.mass and standard deviation args.mass_sigma, from a generator of its own, so the
     #   state vector draws stay those of sampleStateVectors with the same seed
-    sigma_ln = np.sqrt(np.log(1 + (args.mass_sigma/args.mass)**2))
     rng = np.random.default_rng(None if (random_seed is None) else [1, random_seed])
-    m_inits = [args.mass] + list(args.mass*np.exp(sigma_ln*rng.normal(size=len(state_vects) - 1) - sigma_ln**2/2))
+    m_inits = [args.mass] + _logNormal(rng, args.mass, args.mass_sigma, len(state_vects) - 1)
 
-    return backwardStates(traj.jdt_ref, state_vects, m_inits, h_kill=h_kill, t_kill=t_kill, const=const), m_inits
+    # The ablation coefficients likewise, from another generator, so the masses stay the same with or without them
+    n_mc = len(state_vects) - 1
+    if args.ablation_coeff_sigma > 0:
+        rng = np.random.default_rng(None if (random_seed is None) else [2, random_seed])
+        sigmas = [args.ablation_coeff] + _logNormal(rng, args.ablation_coeff, args.ablation_coeff_sigma, n_mc)
+    else:
+        sigmas = [args.ablation_coeff]*len(state_vects)
+
+    result = backwardStates(traj.jdt_ref, state_vects, m_inits, h_kill=h_kill, t_kill=t_kill, const=const,
+        sigmas=[sigma/1e6 for sigma in sigmas])
+
+    if (args.ablation_coeff_sigma == 0) and (not args.freeze_mass):
+        line = []
+        for sigma in CEPLECHA_SIGMA_RANGE:
+            const_type = copy.deepcopy(const)
+            const_type.sigma = sigma/1e6
+            _, states_type, masses_type = backwardStates(traj.jdt_ref, state_vects[:1], m_inits[0], h_kill=h_kill,
+                t_kill=t_kill, const=const_type)
+            line.append("{:.2f} m/s and {:.6g} kg with {:g}".format(np.linalg.norm(states_type[0][3:]),
+                masses_type[0], sigma))
+        print("The nominal run ends at {:.2f} m/s with {:.6g} kg with --ablation_coeff {:g} s^2/km^2, and at {:s} "
+            "(Ceplecha's fireball types I and IIIB). If the erosion above the first point is uncertain, give "
+            "--ablation_coeff_sigma.".format(np.linalg.norm(result[1][0][3:]), result[2][0], args.ablation_coeff,
+            " and at ".join(line)))
+
+    return result, m_inits, sigmas
 
 
 if __name__ == "__main__":
@@ -259,13 +347,14 @@ if __name__ == "__main__":
     state_vect = np.concatenate([traj.state_vect_mini, traj.v_init*traj.radiant_eci_mini])
     state_vects = [state_vect] + sampleStateVectors(traj, args.mc, random_seed)
 
-    (jd, states, masses), m_inits = backwardStatesFromArguments(traj, state_vects, args, 1000*args.atm_height,
-        t_kill=args.atm_time, random_seed=random_seed)
+    (jd, states, masses), m_inits, sigmas = backwardStatesFromArguments(traj, state_vects, args,
+        1000*args.atm_height, t_kill=args.atm_time, random_seed=random_seed)
 
     rows = []
-    for i, (sv, m_ref, m) in enumerate(zip(states, m_inits, masses)):
+    for i, (sv, m_ref, m, sigma) in enumerate(zip(states, m_inits, masses, sigmas)):
         lat, lon, ht = cartesian2Geo(jd, *sv[:3])
-        rows.append([i, m_ref, np.degrees(lat), np.degrees(lon), ht, np.linalg.norm(sv[3:]), m] + list(sv))
+        rows.append([i, m_ref, np.degrees(lat), np.degrees(lon), ht, np.linalg.norm(sv[3:]), m] + list(sv)
+            + [sigma])
     rows = np.array(rows)
 
     print("Mass at the reference point: {:.6g} kg{:s}".format(m_inits[0], ", frozen" if args.freeze_mass else ""))
@@ -275,15 +364,16 @@ if __name__ == "__main__":
         *rows[0, 2:7]))
     if len(rows) > 1:
         print("Monte Carlo seed: {:d}".format(random_seed))
-        for name, col, unit in [("mass at the reference point", 1, "kg"), ("height", 4, "m"),
-                ("speed", 5, "m/s"), ("mass", 6, "kg")]:
+        for name, col, unit in [("mass at the reference point", 1, "kg"), ("ablation coefficient", 13, "s^2/km^2"),
+                ("height", 4, "m"), ("speed", 5, "m/s"), ("mass", 6, "kg")]:
             print("Realizations {:s}: 2.5/50/97.5 percentiles {:s} {:s}".format(name,
                 " / ".join("{:.6g}".format(v) for v in np.percentile(rows[1:, col], [2.5, 50, 97.5])), unit))
 
     out_path = os.path.splitext(args.pickle_path)[0] + "_backward_atm.txt"
-    np.savetxt(out_path, rows, fmt=["%d"] + ["%.10g"]*12, header="JD {:.10f} (UTC), {:.6f} s from the reference "
+    np.savetxt(out_path, rows, fmt=["%d"] + ["%.10g"]*13, header="JD {:.10f} (UTC), {:.6f} s from the reference "
         "point. Row 0 is the nominal solution, the others its realizations. State vectors in ECI, true equator and "
         "equinox of date, velocity to the radiant.\nrow, mass at the reference point (kg), lat (deg), lon (deg), "
-        "height MSL (m), speed (m/s), mass (kg), x (m), y (m), z (m), vx (m/s), vy (m/s), vz (m/s)".format(jd,
+        "height MSL (m), speed (m/s), mass (kg), x (m), y (m), z (m), vx (m/s), vy (m/s), vz (m/s), ablation "
+        "coefficient (s^2/km^2)".format(jd,
         (jd - traj.jdt_ref)*86400))
     print("Saved:", out_path)
