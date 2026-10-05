@@ -33,6 +33,11 @@ RHO_ATM_0 = 1.225
 G0 = 9.81
 R_EARTH = 6371008.7714
 
+# Height of the first fitted point below which the command line advises fitting the initial velocity
+#   (--fitvinit): from 70 km, the velocity of the leading points was within about 50 m/s in synthetic fireballs,
+#   from 60 km up to 310 m/s low
+FIT_V_INIT_ADVISED_HT = 70e3
+
 # Power of a zero absolute magnitude meteor (W), WMPL convention. Used to turn the
 # fitted light curve amplitude (a magnitude offset) into the physical amplitude K of
 # Gritsevich & Koschny (2011) Eq. (13): I = K*f(v), K = P_0M*10^(-0.4*mag_offset).
@@ -5435,15 +5440,44 @@ if __name__ == "__main__":
 
 
         print()
+        # What was fitted, how the heights were mapped, and the velocities involved: the alpha-beta entry
+        #   velocity is the model's asymptote above the atmosphere without gravity, not the speed at the first
+        #   point, which the trajectory's initial velocity is
+        ht_first = np.max(ht_data)
+        v_model_first = alphaBetaVelocity(ht_data_rescaled[np.argmax(ht_data)], alpha, beta, v_init)
+
+        print("Alpha-beta fit to {:d} points, {:.1f} to {:.1f} km".format(len(ht_data), ht_first/1000,
+            np.min(ht_data)/1000))
+        if cml_args.atmrescale == 'column':
+            print("  Heights mapped to the model's exponential atmosphere by the air column above them "
+                "(--atmrescale column; the default before was by local density, --atmrescale density)")
+        else:
+            print("  Heights mapped to the model's exponential atmosphere by local density (--atmrescale "
+                "density, the previous default; it biases alpha and beta where the scale height is not 7.16 km)")
+
+        print("Velocities:")
         if cml_args.fitvinit:
             v_init_std = fit_errors['v_init_std'] if (fit_errors is not None) else np.nan
-            print("Initial velocity = {:.3f} km/s, fitted{:s} (the trajectory's: {:.3f} km/s)".format(
-                v_init/1000, " +/- {:.3f}".format(v_init_std/1000) if np.isfinite(v_init_std) else "",
-                traj.v_init/1000))
-            print("  without gravity, as in the alpha-beta model; with it, {:.3f} km/s at 180 km".format(
-                alphaBetaEntryVelocityWithGravity(v_init, np.max(ht_data))/1000))
+            print("  V_e, alpha-beta entry velocity (asymptote above the atmosphere, without gravity)")
+            print("                                             = {:.3f}{:s} km/s (fitted, --fitvinit)".format(
+                v_init/1000, " +/- {:.3f}".format(v_init_std/1000) if np.isfinite(v_init_std) else ""))
+            print("  Speed at 180 km, with gravity              = {:.3f} km/s".format(
+                alphaBetaEntryVelocityWithGravity(v_init, ht_first)/1000))
         else:
-            print("Initial velocity = {:.2f} km/s".format(traj.v_init/1000))
+            print("  V_e, alpha-beta entry velocity             = {:.3f} km/s (fixed to the trajectory's; fit it "
+                "with --fitvinit)".format(v_init/1000))
+        print("  Model speed at the first point, {:5.1f} km   = {:.3f} km/s".format(ht_first/1000,
+            v_model_first/1000))
+        print("  Trajectory's initial velocity (solver)     = {:.3f} km/s (the model is {:+.0f} m/s from it at the "
+            "first point)".format(traj.v_init/1000, v_model_first - traj.v_init))
+        print("  The masses below use V_e.")
+
+        if (not cml_args.fitvinit) and (ht_first < FIT_V_INIT_ADVISED_HT):
+            print("NOTE: the first point is at {:.1f} km. A meteor first seen this deep is already decelerating "
+                "there, so the trajectory's velocity is below the entry velocity, and fixing V_e to it biases "
+                "alpha and beta: in synthetic fireballs first seen at 60 and 50 km, a velocity from the leading "
+                "points was 70-310 and 460-1010 m/s low, and at 50 km alpha came out 0.3-0.5 and beta 2-4.7 "
+                "times the true ones. Fit it with --fitvinit.".format(ht_first/1000))
         print()
         print("Alpha-beta analysis")
         print("-------------------")
