@@ -333,6 +333,30 @@ def test_command_line_warns_when_the_reference_point_is_deep(capsys):
     assert "At the reference point" in out and "WARNING" not in out
 
 
+def test_command_line_suggests_the_coefficient_of_the_trajectorys_drag_fit(capsys):
+    """ A trajectory solved with the drag fit of the initial velocity carries the effective ablation coefficient at
+        the start of the observed part: it is suggested for --ablation_coeff when the fit constrains it, said to be
+        unconstrained when its uncertainty is as large as it, and nothing is said without a drag fit. """
+
+    traj, state_vect = _exampleStart()
+    args = _parseArguments("--mass", "1e-3")
+
+    traj.v_init_drag_fit = SimpleNamespace(sigma=0.04, sigma_stddev=0.01, t_range=(0.0, 0.9),
+        ht_range=(60e3, 75e3))
+    backwardStatesFromArguments(traj, [state_vect], args, 180000.0)
+    out = capsys.readouterr().out
+    assert "0.0400 +/- 0.0100 s^2/km^2" in out and "--ablation_coeff 0.0400 --ablation_coeff_sigma 0.0100" in out
+
+    traj.v_init_drag_fit = SimpleNamespace(sigma=0.0, sigma_stddev=5.7, t_range=(0.0, 0.28), ht_range=(70e3, 75e3))
+    backwardStatesFromArguments(traj, [state_vect], args, 180000.0)
+    out = capsys.readouterr().out
+    assert "does not constrain it" in out and "--ablation_coeff_sigma 5" not in out
+
+    traj.v_init_drag_fit = None
+    backwardStatesFromArguments(traj, [state_vect], args, 180000.0)
+    assert "--vinitdrag" not in capsys.readouterr().out
+
+
 def test_command_line_refuses_a_mass_the_run_cannot_start_from():
     """ A missing, zero or negative --mass, a negative --mass_sigma, --ablation_coeff or --ablation_coeff_sigma,
         or a spread around a zero coefficient, is a command-line error instead of a division by zero or a complex

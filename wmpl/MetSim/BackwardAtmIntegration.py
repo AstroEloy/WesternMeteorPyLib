@@ -320,13 +320,42 @@ def _logNormal(rng, mean, stddev, n):
     return list(mean*np.exp(sigma_ln*rng.normal(size=n) - sigma_ln**2/2))
 
 
+def dragFitCoefficientNote(drag_fit, ablation_coeff):
+    """ Text on the effective ablation coefficient a trajectory's drag fit of the initial velocity found
+        (wmpl.Utils.DragInitialVelocity), as a value for --ablation_coeff and --ablation_coeff_sigma when it is
+        constrained. It is not used by itself: over a short fit it is often poorly constrained.
+
+    Arguments:
+        drag_fit: [DragVelocityFit] The trajectory's v_init_drag_fit, with sigma and sigma_stddev in s^2/km^2,
+            t_range in s and ht_range in m.
+        ablation_coeff: [float] The --ablation_coeff of this run (s^2/km^2).
+
+    Return:
+        [str]
+    """
+
+    text = ("The trajectory's initial velocity comes from its drag fit (--vinitdrag) over {:.2f} to {:.2f} s, "
+        "{:.1f} to {:.1f} km, which found an effective ablation coefficient of {:.4f} +/- {:.4f} s^2/km^2 at the "
+        "start of the observed part, while this run uses {:g}.").format(drag_fit.t_range[0], drag_fit.t_range[1],
+        drag_fit.ht_range[1]/1000, drag_fit.ht_range[0]/1000, drag_fit.sigma, drag_fit.sigma_stddev,
+        ablation_coeff)
+
+    if (drag_fit.sigma > 0) and (drag_fit.sigma_stddev < drag_fit.sigma):
+        return text + " It can be given as --ablation_coeff {:.4f} --ablation_coeff_sigma {:.4f}.".format(
+            drag_fit.sigma, drag_fit.sigma_stddev)
+
+    return text + " Its uncertainty is as large as the value, so the fit does not constrain it."
+
+
 def backwardStatesFromArguments(traj, state_vects, args, h_kill, t_kill=-1, random_seed=None):
     """ backwardStates() from the trajectory's reference point, with the mass and physical parameters given by the
         command-line arguments of addBackwardArguments(). The masses and ablation coefficients of the
         realizations are drawn with random_seed from --mass and --mass_sigma, and from --ablation_coeff and
         --ablation_coeff_sigma. Also returns the starting masses and the ablation coefficients (s^2/km^2).
 
-    It prints the dynamic pressure and the energy received at the reference point, with a warning when the
+    If the trajectory was solved with the drag fit of the initial velocity, it prints the effective ablation
+    coefficient that fit found (dragFitCoefficientNote). It prints the dynamic pressure and the energy received at
+    the reference point, with a warning when the
     pressure is over FIRST_FRAGMENTATION_PRESSURE, below which a fragmentation above the first point, which this
     single-body run cannot undo, cannot be excluded. If the coefficient is not drawn and the mass is not frozen, it
     also prints the speed and mass of the nominal run with the apparent coefficients of Ceplecha's fireball types I
@@ -362,6 +391,12 @@ def backwardStatesFromArguments(traj, state_vects, args, h_kill, t_kill=-1, rand
 
     result = backwardStates(traj.jdt_ref, state_vects, m_inits, h_kill=h_kill, t_kill=t_kill, const=const,
         sigmas=[sigma/1e6 for sigma in sigmas])
+
+    # A trajectory solved with the drag fit of the initial velocity (--vinitdrag) carries the effective ablation
+    #   coefficient at the start of the observed part, the one that sets the speed of this run
+    drag_fit = getattr(traj, "v_init_drag_fit", None)
+    if drag_fit is not None:
+        print(dragFitCoefficientNote(drag_fit, args.ablation_coeff))
 
     # How deep the reference point is
     pressure, energy = referenceLoading(traj.jdt_ref, state_vects[0])
