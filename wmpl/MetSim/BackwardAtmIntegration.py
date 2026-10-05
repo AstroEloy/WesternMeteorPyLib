@@ -43,19 +43,36 @@ way up gives, from the run without erosion, and the mass at 180 km over the star
 | 10 km above | 97%, 3.23 | 98%, 33.7 |
 | 180 km | 100% (-73 m/s), 4.15 | 100% (-601 m/s), 61.9 |
 
-The speed is set within the first few km, while the mass keeps growing with any erosion higher up. When the
-coefficient is uncertain, --ablation_coeff_sigma draws one for each Monte Carlo realization; otherwise the command
-lines also report the nominal run with the coefficients of types I and IIIB.
+The speed is set within the first few km, while the mass keeps growing with any erosion higher up.
+
+Against a truth run forwards from 180 km (chondritic fireballs of 10 kg at 15, 20 and 30 km/s, intrinsic sigma =
+0.005 s^2/km^2, eta = 0.1-0.3 s^2/km^2 starting where the dynamic pressure reaches 0.04 MPa or the received energy 1
+MJ/m^2, the same atmosphere in every run, reference points at 50-70 km), running back with the right sigma + eta all
+the way to 180 km left the speed within 3 m/s and the mass within a factor 1.3, over the truth when the erosion had
+started at 0.04 MPa; going back to the intrinsic sigma above either onset gave the speed within 4 m/s and the mass
+within a factor 0.73-1.3. A height above which the body stops eroding is therefore not modelled: the thin air there
+takes little speed. What sets the result is sigma + eta over the first few km above the reference point. Run back
+with the intrinsic sigma or MetSim's 0.023 instead, the speed came out up to 2 m/s off from 70 km, 73 m/s from 60 km
+and 660 m/s from 50 km; for a body that did not erode, MetSim's 0.023 put it 7-24 m/s low from 50 km. A
+fragmentation above the reference point cannot be undone: with half the mass lost at 0.04 or 0.12 MPa and the right
+coefficient, the mass at 180 km came out half the true one and the speed 5-17 or 17-58 m/s high.
+
+So the command lines report the dynamic pressure and the energy received at the reference point (referenceLoading),
+warn when the pressure is over the 0.04 MPa of the first fragmentation of chondritic fireballs
+(FIRST_FRAGMENTATION_PRESSURE), and report the nominal run with the coefficients of Ceplecha's types I and IIIB, as
+a warning when the two speeds differ by more than the uncertainty of the initial velocity. When the coefficient is
+uncertain, --ablation_coeff_sigma draws one for each Monte Carlo realization.
 """
 
 import argparse
 import copy
+import math
 import os
 
 import numpy as np
 
 from wmpl.MetSim.MetSimErosion import Constants, EARTH_ROTATION_RATE, runSimulation
-from wmpl.Utils.AtmosphereDensity import fitAtmPoly
+from wmpl.Utils.AtmosphereDensity import fitAtmPoly, getAtmDensity
 from wmpl.Utils.TrajConversions import cartesian2Geo, derotatedRadiantAltAz, enu2ECEF, jd2LST
 
 
@@ -217,10 +234,12 @@ def addBackwardArguments(arg_parser):
     arg_parser.add_argument("--ablation_coeff", type=float, default=Constants().sigma*1e6,
         help="Effective ablation coefficient in s^2/km^2: the mass lost for the kinetic energy lost to the drag "
         "(dm = sigma m v dv), so it sets how fast the mass grows back. It includes the erosion of the body "
-        "(sigma + eta) above the starting point. An apparent coefficient fitted to the meteoroid's deceleration, or "
-        "Ceplecha's 0.014, 0.042, 0.10 and 0.21 for fireball types I, II, IIIA and IIIB, includes the erosion, but "
-        "measured lower down it likely overestimates the growth above. Default: MetSim's, {:g}.".format(
-        Constants().sigma*1e6))
+        "(sigma + eta) above the starting point. The speed at the end is set by its value over the first few km "
+        "above the starting point, so the best is one fitted at the start of the observed part (e.g. by "
+        "DynamicMassFit or the trajectory solver's --vinitdrag); farther up it matters little for the speed and "
+        "likely overestimates the mass growth. Ceplecha's 0.014, 0.042, 0.10 and 0.21 for fireball types I, II, "
+        "IIIA and IIIB are apparent coefficients over whole trajectories, and 0.005 is the intrinsic one of "
+        "chondritic fireballs (Borovicka et al. 2020). Default: MetSim's, {:g}.".format(Constants().sigma*1e6))
 
     arg_parser.add_argument("--ablation_coeff_sigma", type=float, default=0.0,
         help="1-sigma uncertainty of --ablation_coeff in s^2/km^2. Each Monte Carlo realization runs with a "
@@ -260,6 +279,38 @@ def checkBackwardArguments(arg_parser, args):
 #   report the nominal run for when the coefficient is not drawn
 CEPLECHA_SIGMA_RANGE = (0.014, 0.21)
 
+# Dynamic pressure (Pa) at which ordinary chondritic fireballs typically fragment a first time, 0.04-0.12 MPa
+#   (Borovicka et al. 2020): below it, a fragmentation above the starting point cannot be excluded
+FIRST_FRAGMENTATION_PRESSURE = 0.04e6
+
+
+def referenceLoading(jd_ref, state_vect, n_top=200):
+    """ The dynamic pressure on a meteoroid at the given state vector, and the energy per unit cross section it
+        received above it.
+
+    The energy, E = int rho_air v^3/2 dt, is taken with the speed at the state vector along a straight path up to
+    180 km, rho_air v^2/2/cos(z) per unit height; the deceleration above makes it slightly low.
+
+    Arguments:
+        jd_ref: [float] Julian date of the state vector.
+        state_vect: [ndarray] State vector (see the module docstring).
+
+    Keyword arguments:
+        n_top: [int] Number of heights the energy is integrated over.
+
+    Return:
+        (pressure, energy): rho_air v^2 (Pa) and the energy received (J/m^2), with the speed relative to the ground.
+    """
+
+    const = Constants()
+    lat, lon = _startFrom(const, jd_ref, state_vect)
+
+    hts = np.linspace(const.h_init, 180e3, n_top)
+    rho = np.array([getAtmDensity(lat, lon, ht, jd_ref) for ht in hts])
+    column = np.sum(np.diff(hts)*(rho[1:] + rho[:-1])/2)/math.cos(const.zenith_angle)
+
+    return rho[0]*const.v_init**2, const.v_init**2/2*column
+
 
 def _logNormal(rng, mean, stddev, n):
     """ n draws from a log-normal distribution with the given mean and standard deviation, all positive. """
@@ -275,9 +326,11 @@ def backwardStatesFromArguments(traj, state_vects, args, h_kill, t_kill=-1, rand
         realizations are drawn with random_seed from --mass and --mass_sigma, and from --ablation_coeff and
         --ablation_coeff_sigma. Also returns the starting masses and the ablation coefficients (s^2/km^2).
 
-    If the coefficient is not drawn and the mass is not frozen, it also prints the speed and mass of the nominal
-    run with the apparent coefficients of Ceplecha's fireball types I and IIIB, so the effect of the erosion and
-    fragmentation above the first point can be seen.
+    It prints the dynamic pressure and the energy received at the reference point, with a warning when the
+    pressure is over FIRST_FRAGMENTATION_PRESSURE, below which a fragmentation above the first point, which this
+    single-body run cannot undo, cannot be excluded. If the coefficient is not drawn and the mass is not frozen, it
+    also prints the speed and mass of the nominal run with the apparent coefficients of Ceplecha's fireball types I
+    and IIIB, as a warning when their speeds differ by more than the uncertainty of the initial velocity.
     """
 
     if (args.mass_sigma > 0) and (len(state_vects) == 1):
@@ -310,19 +363,42 @@ def backwardStatesFromArguments(traj, state_vects, args, h_kill, t_kill=-1, rand
     result = backwardStates(traj.jdt_ref, state_vects, m_inits, h_kill=h_kill, t_kill=t_kill, const=const,
         sigmas=[sigma/1e6 for sigma in sigmas])
 
+    # How deep the reference point is
+    pressure, energy = referenceLoading(traj.jdt_ref, state_vects[0])
+    print("At the reference point: dynamic pressure {:.4f} MPa, energy received {:.3g} MJ/m^2.".format(
+        pressure/1e6, energy/1e6))
+    if pressure >= FIRST_FRAGMENTATION_PRESSURE:
+        print("WARNING: The dynamic pressure at the reference point is over the {:g} MPa at which ordinary "
+            "chondritic fireballs typically fragment a first time (0.04-0.12 MPa, Borovicka et al. 2020). A "
+            "fragmentation above the first point cannot be undone by this single-body run: the mass at the end is "
+            "then short by the mass that was lost, a lower limit, and the speed comes out high (5-58 m/s in "
+            "synthetic tests with half the mass lost at 0.04-0.12 MPa). From this depth the ablation coefficient "
+            "also dominates the result: give one fitted at the start of the observed part, with "
+            "--ablation_coeff_sigma.".format(FIRST_FRAGMENTATION_PRESSURE/1e6))
+
     if (args.ablation_coeff_sigma == 0) and (not args.freeze_mass):
-        line = []
+        line, speeds = [], []
         for sigma in CEPLECHA_SIGMA_RANGE:
             const_type = copy.deepcopy(const)
             const_type.sigma = sigma/1e6
             _, states_type, masses_type = backwardStates(traj.jdt_ref, state_vects[:1], m_inits[0], h_kill=h_kill,
                 t_kill=t_kill, const=const_type)
-            line.append("{:.2f} m/s and {:.6g} kg with {:g}".format(np.linalg.norm(states_type[0][3:]),
-                masses_type[0], sigma))
-        print("The nominal run ends at {:.2f} m/s with {:.6g} kg with --ablation_coeff {:g} s^2/km^2, and at {:s} "
-            "(Ceplecha's fireball types I and IIIB). If the erosion above the first point is uncertain, give "
-            "--ablation_coeff_sigma.".format(np.linalg.norm(result[1][0][3:]), result[2][0], args.ablation_coeff,
-            " and at ".join(line)))
+            speeds.append(np.linalg.norm(states_type[0][3:]))
+            line.append("{:.2f} m/s and {:.6g} kg with {:g}".format(speeds[-1], masses_type[0], sigma))
+
+        # The Monte Carlo uncertainty of the initial velocity if there is one, else the solver's formal one
+        v_init_stddev = getattr(getattr(traj, "uncertainties", None), "v_init", None)
+        if v_init_stddev is None:
+            v_init_stddev = getattr(traj, "v_init_stddev", None)
+        spread = abs(speeds[1] - speeds[0])
+        significant = (v_init_stddev is not None) and (spread > v_init_stddev)
+
+        print(("{:s}The nominal run ends at {:.2f} m/s with {:.6g} kg with --ablation_coeff {:g} s^2/km^2, and at "
+            "{:s} (Ceplecha's fireball types I and IIIB){:s}. If the erosion above the first point is uncertain, "
+            "give --ablation_coeff_sigma.").format("WARNING: " if significant else "",
+            np.linalg.norm(result[1][0][3:]), result[2][0], args.ablation_coeff, " and at ".join(line),
+            ": {:.2f} m/s apart, more than the {:.2f} m/s uncertainty of the initial velocity".format(spread,
+            v_init_stddev) if significant else ""))
 
     return result, m_inits, sigmas
 

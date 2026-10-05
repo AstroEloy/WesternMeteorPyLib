@@ -15,7 +15,7 @@ import numpy as np
 import pytest
 
 from wmpl.MetSim.BackwardAtmIntegration import addBackwardArguments, backwardConstants, backwardState, \
-    backwardStates, backwardStatesFromArguments, checkBackwardArguments
+    backwardStates, backwardStatesFromArguments, checkBackwardArguments, referenceLoading
 from wmpl.MetSim.MetSimErosion import Constants, Fragment, runSimulation
 from wmpl.Rebound.REBOUND import sampleStateVectors
 from wmpl.Utils.Pickling import loadPickle, savePickle
@@ -288,6 +288,51 @@ def test_command_line_reports_the_run_with_ceplechas_types_when_the_coefficient_
         assert "Ceplecha" not in capsys.readouterr().out
 
 
+def _deepStart(h_start):
+    """ A trajectory at 20 km/s, 45 deg from the zenith, whose reference point is at h_start (m). """
+
+    jd = 2460000.6
+    lat, lon = np.radians(45.0), np.radians(15.0)
+    p0 = np.array(geo2Cartesian(lat, lon, h_start, jd))
+    ra, dec = altAz2RADec(np.radians(90.0), np.radians(45.0), jd, lat, lon)
+    traj = SimpleNamespace(jdt_ref=jd, v_init_stddev=10.0, uncertainties=None)
+
+    return traj, np.r_[p0, 20000.0*np.array(raDec2ECI(ra, dec))]
+
+
+def test_reference_loading_gives_the_dynamic_pressure_and_the_received_energy():
+    """ The example meteor's reference point, at 116 km and 67 km/s, is under 0.0002 MPa and has received 0.9
+        MJ/m^2; a fireball at 20 km/s, 45 deg from the zenith, is under 0.028, 0.12 and 0.41 MPa at 70, 60 and
+        50 km, having received 130, 590 and 2300 MJ/m^2. """
+
+    traj, state_vect = _exampleStart()
+    pressure, energy = referenceLoading(traj.jdt_ref, state_vect)
+    assert pressure < 0.0002e6 and 0.8e6 < energy < 1.0e6
+
+    for h_start, p_expected, e_expected in [(70e3, 0.028e6, 130e6), (60e3, 0.12e6, 590e6), (50e3, 0.41e6, 2300e6)]:
+        traj, state_vect = _deepStart(h_start)
+        pressure, energy = referenceLoading(traj.jdt_ref, state_vect)
+        assert abs(pressure/p_expected - 1) < 0.05 and abs(energy/e_expected - 1) < 0.05
+
+
+def test_command_line_warns_when_the_reference_point_is_deep(capsys):
+    """ From 50 km, over the 0.04 MPa of a first fragmentation, the command line warns that a fragmentation above
+        cannot be undone, and that the speeds with Ceplecha's types I and IIIB differ by more than the initial
+        velocity's 10 m/s uncertainty; from the example's 116 km it warns of neither. """
+
+    traj, state_vect = _deepStart(50e3)
+    backwardStatesFromArguments(traj, [state_vect], _parseArguments("--mass", "1"), 180000.0)
+    out = capsys.readouterr().out
+    assert "At the reference point: dynamic pressure 0.40" in out
+    assert "WARNING: The dynamic pressure at the reference point is over the 0.04 MPa" in out
+    assert "WARNING: The nominal run ends" in out and "more than the 10.00 m/s uncertainty" in out
+
+    traj, state_vect = _exampleStart()
+    backwardStatesFromArguments(traj, [state_vect], _parseArguments("--mass", "1e-3"), 180000.0)
+    out = capsys.readouterr().out
+    assert "At the reference point" in out and "WARNING" not in out
+
+
 def test_command_line_refuses_a_mass_the_run_cannot_start_from():
     """ A missing, zero or negative --mass, a negative --mass_sigma, --ablation_coeff or --ablation_coeff_sigma,
         or a spread around a zero coefficient, is a command-line error instead of a division by zero or a complex
@@ -339,5 +384,6 @@ if __name__ == "__main__":
     test_mass_uncertainty_spreads_the_masses_of_the_realizations()
     test_erosion_of_the_body_is_undone_by_running_back_with_sigma_plus_eta()
     test_ablation_coefficient_uncertainty_spreads_the_coefficients_of_the_realizations()
+    test_reference_loading_gives_the_dynamic_pressure_and_the_received_energy()
     test_command_line_refuses_a_mass_the_run_cannot_start_from()
     print("All BackwardAtmIntegration checks passed.")
