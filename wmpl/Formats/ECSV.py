@@ -100,6 +100,10 @@ def loadECSVs(ecsv_paths, no_prepare=False):
             # Skip the header
             data = data[1:]
 
+            # Skip the rows without the main fragment (fragment 0), i.e. the frames on which only other
+            #   fragments were measured (their columns have a numeric suffix, e.g. azimuth1)
+            data = data[np.char.strip(data[:, azim_indx]) != '']
+
             # Unpack data
             dt_data, azim_data, alt_data, x_data, y_data = data[:, dt_indx], data[:, azim_indx], \
                 data[:, alt_indx], data[:, x_indx], data[:, y_indx]
