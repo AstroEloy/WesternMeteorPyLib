@@ -6,7 +6,7 @@
 
 From the command line, to a height or for a time, with or without Monte Carlo realizations:
 
-    python -m wmpl.MetSim.BackwardAtmIntegration traj.pickle --mass 0.5 --atm_height 180 --mc 100
+    python -m wmpl.MetSim.BackwardAtmIntegration traj.pickle --mass 0.5 --back_height 180 --mc 100 --atm 2.1
 
 State vectors are [x, y, z, vx, vy, vz] in ECI (true equator and equinox of date), in m and m/s, with the
 velocity pointing to the radiant, as the solver gives them and reboundSimulate() takes them.
@@ -72,8 +72,9 @@ import os
 import numpy as np
 
 from wmpl.MetSim.MetSimErosion import Constants, EARTH_ROTATION_RATE, runSimulation
-from wmpl.Utils.AtmosphereDensity import fitAtmPoly, getAtmDensity
-from wmpl.Utils.TrajConversions import cartesian2Geo, derotatedRadiantAltAz, enu2ECEF, jd2LST
+from wmpl.Utils import AtmosphereDensity
+from wmpl.Utils.AtmosphereDensity import addAtmosphereArguments, fitAtmPoly, getAtmDensity, getMSISVersion
+from wmpl.Utils.TrajConversions import cartesian2Geo, derotatedRadiantAltAz, enu2ECEF, jd2Date, jd2LST
 
 
 def _eciToEcef(jd):
@@ -216,9 +217,24 @@ def backwardStates(jd_ref, state_vects, m_init, h_kill=180000.0, t_kill=-1, cons
     return jd, states, masses
 
 
+def atmosphereDescription():
+    """ The MSIS model the densities of a run back through the atmosphere come from, as chosen with --atm and
+        --atmtime (see wmpl.Utils.AtmosphereDensity.setAtmosphere()). """
+
+    version = getMSISVersion()
+    name = "NRLMSISE-00" if version == "00" else "NRLMSIS " + version
+
+    if AtmosphereDensity.MSIS_JD is None:
+        return name + ", at the trajectory's time"
+
+    return name + ", at " + jd2Date(AtmosphereDensity.MSIS_JD, dt_obj=True).strftime("%Y-%m-%d %H:%M:%S") \
+        + " UTC (--atmtime)"
+
+
 def addBackwardArguments(arg_parser):
     """ Add the command-line arguments for the mass and the physical parameters of the meteoroid in a run back
-        through the atmosphere, shared by this module's command line and REBOUND's. """
+        through the atmosphere, shared by this module's command line and REBOUND's, and those of the atmosphere
+        model (--atm and --atmtime), which setAtmosphere() applies after parsing. """
 
     arg_parser.add_argument("--mass", type=float, default=None,
         help="Mass of the meteoroid at the trajectory's reference point in kg, e.g. a photometric mass. In REBOUND "
@@ -255,6 +271,9 @@ def addBackwardArguments(arg_parser):
         default=Constants().gamma*Constants().shape_factor,
         help="The product of the drag coefficient Gamma and the shape coefficient A. Default: MetSim's, "
         "{:g}.".format(Constants().gamma*Constants().shape_factor))
+
+    # The MSIS model of the air density
+    addAtmosphereArguments(arg_parser)
 
 
 def checkBackwardArguments(arg_parser, args):
@@ -442,6 +461,7 @@ def backwardStatesFromArguments(traj, state_vects, args, h_kill, t_kill=-1, rand
 if __name__ == "__main__":
 
     from wmpl.Rebound.REBOUND import sampleStateVectors
+    from wmpl.Utils.AtmosphereDensity import setAtmosphere
     from wmpl.Utils.Pickling import loadPickle
 
     arg_parser = argparse.ArgumentParser(description="Run a trajectory, and optionally its Monte Carlo "
@@ -450,11 +470,11 @@ if __name__ == "__main__":
 
     arg_parser.add_argument("pickle_path", type=str, help="Path to the trajectory pickle file.")
 
-    arg_parser.add_argument("--atm_height", type=float, default=180.0,
+    arg_parser.add_argument("--back_height", type=float, default=180.0,
         help="Height in km to run back to. Default: 180.")
 
-    arg_parser.add_argument("--atm_time", type=float, default=-1,
-        help="Run back for this many seconds instead, unless --atm_height is reached first.")
+    arg_parser.add_argument("--back_time", type=float, default=-1,
+        help="Run back for this many seconds instead, unless --back_height is reached first.")
 
     arg_parser.add_argument("--mc", type=int, default=1,
         help="Number of Monte Carlo realizations drawn from the trajectory's state vector covariance, run back for "
@@ -467,6 +487,7 @@ if __name__ == "__main__":
     args = arg_parser.parse_args()
 
     checkBackwardArguments(arg_parser, args)
+    setAtmosphere(args)
 
     # As in REBOUND's command line, draw a seed if none was given and report it, so the run can be reproduced
     random_seed = args.seed if args.seed is not None else int(np.random.SeedSequence().entropy % (2**32))
@@ -476,7 +497,7 @@ if __name__ == "__main__":
     state_vects = [state_vect] + sampleStateVectors(traj, args.mc, random_seed)
 
     (jd, states, masses), m_inits, sigmas = backwardStatesFromArguments(traj, state_vects, args,
-        1000*args.atm_height, t_kill=args.atm_time, random_seed=random_seed)
+        1000*args.back_height, t_kill=args.back_time, random_seed=random_seed)
 
     rows = []
     for i, (sv, m_ref, m, sigma) in enumerate(zip(states, m_inits, masses, sigmas)):
@@ -485,6 +506,7 @@ if __name__ == "__main__":
             + [sigma])
     rows = np.array(rows)
 
+    print("Atmosphere: {:s}".format(atmosphereDescription()))
     print("Mass at the reference point: {:.6g} kg{:s}".format(m_inits[0], ", frozen" if args.freeze_mass else ""))
     print("Ran {:d} state vector(s) back {:.4f} s, to JD {:.8f}".format(len(states), (traj.jdt_ref - jd)*86400,
         jd))
@@ -500,8 +522,8 @@ if __name__ == "__main__":
     out_path = os.path.splitext(args.pickle_path)[0] + "_backward_atm.txt"
     np.savetxt(out_path, rows, fmt=["%d"] + ["%.10g"]*13, header="JD {:.10f} (UTC), {:.6f} s from the reference "
         "point. Row 0 is the nominal solution, the others its realizations. State vectors in ECI, true equator and "
-        "equinox of date, velocity to the radiant.\nrow, mass at the reference point (kg), lat (deg), lon (deg), "
+        "equinox of date, velocity to the radiant. Atmosphere: {:s}.\nrow, mass at the reference point (kg), lat (deg), lon (deg), "
         "height MSL (m), speed (m/s), mass (kg), x (m), y (m), z (m), vx (m/s), vy (m/s), vz (m/s), ablation "
         "coefficient (s^2/km^2)".format(jd,
-        (jd - traj.jdt_ref)*86400))
+        (jd - traj.jdt_ref)*86400, atmosphereDescription()))
     print("Saved:", out_path)

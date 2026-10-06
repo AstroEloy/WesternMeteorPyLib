@@ -2419,8 +2419,9 @@ if __name__ == "__main__":
     import os
     import argparse
 
-    from wmpl.MetSim.BackwardAtmIntegration import addBackwardArguments, backwardStatesFromArguments, \
-        checkBackwardArguments
+    from wmpl.MetSim.BackwardAtmIntegration import addBackwardArguments, atmosphereDescription, \
+        backwardStatesFromArguments, checkBackwardArguments
+    from wmpl.Utils.AtmosphereDensity import setAtmosphere
     from wmpl.Utils.Pickling import loadPickle
 
 
@@ -2496,12 +2497,13 @@ if __name__ == "__main__":
                         "reporting whether it converges to 2 (regular orbit) or keeps growing "
                         "(chaotic). MEGNO needs tens of orbital periods: use --days accordingly.")
 
-    parser.add_argument("--atm_height", type=float, nargs="?", const=180.0, default=None,
+    parser.add_argument("--back_height", type=float, nargs="?", const=180.0, default=None,
                         help="Start the orbit integration above the atmosphere instead of at the trajectory's "
                         "reference point: run the nominal solution back up to this height in km (180 if no "
                         "value is given) with MetSim (single body, drag, gravity, Coriolis), and each Monte "
                         "Carlo realization back for the same time, with --mass (required), --mass_sigma, "
-                        "--freeze_mass, --ablation_coeff, --density and --ga.")
+                        "--freeze_mass, --ablation_coeff, --density and --ga, in the atmosphere chosen with "
+                        "--atm and --atmtime.")
 
     addBackwardArguments(parser)
 
@@ -2509,11 +2511,12 @@ if __name__ == "__main__":
 
     args = parser.parse_args()
 
-    if args.atm_height is not None:
+    if args.back_height is not None:
         if args.forward is not None:
-            parser.error("--atm_height starts a backward integration above the atmosphere, so it cannot be used "
+            parser.error("--back_height starts a backward integration above the atmosphere, so it cannot be used "
                 "with --forward.")
         checkBackwardArguments(parser, args)
+        setAtmosphere(args)
 
     # Extract the number of days from the arguments and the simulation direction. --forward may be
     # given on its own (use --days) or with its own number of days.
@@ -2565,18 +2568,19 @@ if __name__ == "__main__":
     # Load the trajectory data from a pickle file
     traj = loadPickle(*os.path.split(args.pickle_path))
 
-    # Start from the trajectory's reference point, or with --atm_height from above the atmosphere, after running
+    # Start from the trajectory's reference point, or with --back_height from above the atmosphere, after running
     #   the nominal solution and each realization back through it to a common epoch
     jd_start = traj.jdt_ref
     state_vect = np.concatenate([traj.state_vect_mini, traj.v_init*traj.radiant_eci_mini])
     state_vect_realizations = sampleStateVectors(traj, args.mc, random_seed)
-    if args.atm_height is not None:
+    if args.back_height is not None:
         (jd_start, states, masses), m_inits, _ = backwardStatesFromArguments(traj,
-            [state_vect] + state_vect_realizations, args, 1000*args.atm_height, random_seed=random_seed)
+            [state_vect] + state_vect_realizations, args, 1000*args.back_height, random_seed=random_seed)
         state_vect, state_vect_realizations = states[0], states[1:]
-        print("Ran {:d} state vector(s) back through the atmosphere for {:.3f} s, to {:.1f} km, from {:.6g} kg "
-            "at the reference point to {:.6g} kg.".format(len(states), (traj.jdt_ref - jd_start)*86400,
-            cartesian2Geo(jd_start, *state_vect[:3])[2]/1000, m_inits[0], masses[0]))
+        print("Ran {:d} state vector(s) back through the atmosphere ({:s}) for {:.3f} s, to {:.1f} km, from "
+            "{:.6g} kg at the reference point to {:.6g} kg.".format(len(states), atmosphereDescription(),
+            (traj.jdt_ref - jd_start)*86400, cartesian2Geo(jd_start, *state_vect[:3])[2]/1000, m_inits[0],
+            masses[0]))
 
 
     ### Non-gravitational forces (off by default, as they need the object's size) ###
