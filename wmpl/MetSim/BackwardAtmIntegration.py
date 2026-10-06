@@ -221,7 +221,8 @@ def addBackwardArguments(arg_parser):
         through the atmosphere, shared by this module's command line and REBOUND's. """
 
     arg_parser.add_argument("--mass", type=float, default=None,
-        help="Mass of the meteoroid at the trajectory's reference point in kg, e.g. a photometric mass.")
+        help="Mass of the meteoroid at the trajectory's reference point in kg, e.g. a photometric mass. In REBOUND "
+        "it also sets the radiation pressure (beta) with --density.")
 
     arg_parser.add_argument("--mass_sigma", type=float, default=0.0,
         help="1-sigma uncertainty of --mass in kg. Each Monte Carlo realization starts with a mass drawn from a "
@@ -248,7 +249,7 @@ def addBackwardArguments(arg_parser):
 
     arg_parser.add_argument("--density", type=float, default=3000.0,
         help="Bulk density of the meteoroid in kg/m^3, which with the mass sets the drag, and in REBOUND the "
-        "radiation pressure with --radius. Default: 3000.")
+        "radiation pressure with --radius or --mass. Default: 3000.")
 
     arg_parser.add_argument("-g", "--ga", metavar="GAMMA_A", type=float,
         default=Constants().gamma*Constants().shape_factor,
