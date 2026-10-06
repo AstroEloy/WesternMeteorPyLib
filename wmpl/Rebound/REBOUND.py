@@ -2583,19 +2583,13 @@ if __name__ == "__main__":
     beta = args.beta
     if args.mass is not None:
 
-        if args.mass < 0:
+        # The mass (shared with the run back through the atmosphere) sets beta, so it cannot be combined
+        #   with another size
+        if (args.beta is not None) or (args.radius is not None):
+            parser.error("Give only one of --beta, --radius and --mass.")
+
+        if args.mass <= 0:
             parser.error("--mass must be positive, got {:g} kg.".format(args.mass))
-
-        # --mass without a value: take the photometric mass off the light curve, with the same
-        # zero-magnitude power as the trajectory summaries. The import is local because that module
-        # pulls in the whole plotting stack.
-        if args.mass == 0:
-            from wmpl.Trajectory.AggregateAndPlot import computeMass, P_0M
-
-            args.mass = computeMass(traj, P_0M)
-            if not args.mass:
-                parser.error("The trajectory has no photometry, so --mass needs a value in kg.")
-            print("Photometric mass: {:.4g} kg (P_0m = {:g} W, tau = 0.7%).".format(args.mass, P_0M))
 
         args.radius = equivalentSphereRadius(args.mass, args.density)
 
