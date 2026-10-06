@@ -1134,10 +1134,8 @@ if __name__ == "__main__":
 
         # On the solution with the original picks, which the saved report describes, with uncertainties from
         #   the Monte Carlo runs
-        traj_path = os.path.join(traj.output_dir, traj.file_name + '_trajectory.pickle')
-        traj_orig = loadPickle(*os.path.split(traj_path)) if os.path.isfile(traj_path) else traj
-
-        flares = flareHeights(traj_orig, ecsv_paths, mc_trajs=getattr(traj, 'mc_traj_list', None))
+        flares = flareHeights(originalPicksTrajectory(traj), ecsv_paths,
+            mc_trajs=getattr(traj, 'mc_traj_list', None))
         if flares:
 
             flare_report = flareReport(flares)
