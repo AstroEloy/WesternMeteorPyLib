@@ -13,7 +13,9 @@ from types import SimpleNamespace
 
 import numpy as np
 
-from wmpl.Formats.ECSV import ecsvFragments, loadECSVs, appliedTimeOffsets, solverStationIDs, flareReport
+from wmpl.Formats.ECSV import ecsvFragments, loadECSVs, appliedTimeOffsets, solverStationIDs, flareReport, \
+    originalPicksTrajectory
+from wmpl.Utils.Pickling import savePickle
 
 
 META = """# %ECSV 0.9
@@ -238,3 +240,22 @@ def test_flare_report_compares_stations():
     comparison = report.split("compared")[-1]
     assert "times overlap" in comparison
     assert ("sigma" not in comparison) and ("consistent" not in comparison)
+
+
+def test_original_picks_trajectory(tmp_path):
+    """ With the Monte Carlo runs the solver returns the best run, and the solution with the original picks is 
+        the one saved with the results. """
+
+    best = SimpleNamespace(uncertainties=SimpleNamespace(), save_results=True, output_dir=str(tmp_path), 
+        file_name="20260130_102535", name="best run")
+    savePickle(SimpleNamespace(name="original picks"), str(tmp_path), "20260130_102535_trajectory.pickle")
+
+    assert originalPicksTrajectory(best).name == "original picks"
+
+    # Without the Monte Carlo runs the solver returns the solution with the original picks itself
+    no_mc = SimpleNamespace(**dict(best.__dict__, uncertainties=None))
+    assert originalPicksTrajectory(no_mc) is no_mc
+
+    # Without the saved results, there is no other solution than the given one
+    not_saved = SimpleNamespace(**dict(best.__dict__, save_results=False))
+    assert originalPicksTrajectory(not_saved) is not_saved

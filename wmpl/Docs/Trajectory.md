@@ -69,9 +69,11 @@ python -m wmpl.Formats.ECSV /path/to/event/*.ecsv --fragments
 
 Two solutions differ slightly even for identical data, as each goes through its own iterations of the
 timing and velocity estimation: in tests, by about 0.001 deg and tens of metres with well spread stations,
-and up to about 0.1 deg and a few hundred metres with nearly parallel ones. With the Monte Carlo runs the
-differences are also given in units of the combined uncertainty, but the solutions compared are the best
-Monte Carlo runs, so even identical data differ by about 1 sigma.
+and up to about 0.1 deg and a few hundred metres with nearly parallel ones. With the Monte Carlo runs, the
+solutions compared are still those with the original picks (not the best Monte Carlo runs, which differ by
+about 1 sigma even for identical data), and the differences are also given in units of the combined
+uncertainty. The time offsets reused by the fragments are also those of the main solution with the original
+picks, the ones in its report.
 
 ## The trajectory pickle
 
