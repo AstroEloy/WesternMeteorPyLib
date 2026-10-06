@@ -15,7 +15,8 @@ t = 0, sigma and B = Gamma A rho_m^(-2/3) m0^(-1/3), so neither the mass nor the
 drag only takes that combination, and the mass it is given follows from B. The measured deceleration constrains B
 and sigma, and with them the velocity at the first point. The time offsets of the stations other than the
 reference one are fitted again, since the solver estimates them with a lag model that absorbs part of the
-deceleration; they are only used for this fit.
+deceleration; they are only used for this fit. The offsets the solver was given as fixed are kept, as they do not
+come from its lag model.
 
 With the option on, the solver takes the fitted velocity whenever the fit converges and fits better than the
 straight line. Keeping the straight line when the fit does not measure its bias (when the two velocities are within
@@ -172,7 +173,8 @@ class DragVelocityFit(object):
             sigma: [float] Ablation coefficient (s^2/km^2).
             sigma_stddev: [float] Its formal 1-sigma uncertainty (s^2/km^2). Large when the ablation does not
                 change the deceleration enough to be measured, which is when it does not matter for v_init.
-            time_offsets: [dict] Time offsets added to each station's times for this fit (s), by station ID.
+            time_offsets: [dict] Time offsets added to each station's times for this fit (s), by station ID, 0
+                for the stations in fixed_stations.
             rms: [float] RMS of the length residuals (m).
             v_init_linear: [float] The solver's straight-line initial velocity (m/s).
             rms_linear: [float] RMS of the length residuals of that straight line (m).
@@ -194,6 +196,9 @@ class DragVelocityFit(object):
         self.n_points = n_points
         self.ht_range = ht_range
         self.t_range = t_range
+
+        # Stations whose time offsets were kept instead of fitted, as they were given to the solver as fixed
+        self.fixed_stations = []
 
         # Along the fitted model over the fitted points (see breakupNotes): the range of the dynamic pressure
         #   rho_air v^2 (Pa) and of the energy received per unit cross section from the top of the atmosphere
@@ -436,9 +441,15 @@ def fitDragInitialVelocity(traj, ht_min=None, t_max=None, fine_dt=0.001, return_
     times, lengths, heights = np.concatenate(times), np.concatenate(lengths), np.concatenate(heights)
     station_index = np.concatenate(station_index)
 
-    # The stations whose time offset is fitted, all but the reference one, or but the first one if the reference
-    #   station has no points in the fitted part, since a common offset is the intercept
-    offset_stations = [i for i, obs in enumerate(observations) if obs.station_id != ref_id]
+    # The time offsets the solver was given as fixed are kept, as they do not come from its lag model
+    kept = set(str(station_id) for station_id in getattr(traj, 'fixed_time_offsets', {}))
+
+    # The stations whose time offset is fitted: all but the kept ones, or without them in the fitted part, all but
+    #   the reference one, or but the first one if the reference station has no points in the fitted part either,
+    #   since a common offset is the intercept
+    offset_stations = [i for i, obs in enumerate(observations) if str(obs.station_id) not in kept]
+    if len(offset_stations) == len(observations):
+        offset_stations = [i for i in offset_stations if observations[i].station_id != ref_id]
     if len(offset_stations) == len(observations):
         offset_stations = offset_stations[1:]
     if len(times) <= 4 + len(offset_stations):
@@ -514,6 +525,7 @@ def fitDragInitialVelocity(traj, ht_min=None, t_max=None, fine_dt=0.001, return_
     fit_result = DragVelocityFit(params[0], stddev[0], params[2], math.exp(params[1]), params[3], stddev[3],
         time_offsets, rms, v_lin, rms_linear, len(times), (np.min(heights), np.max(heights)),
         (np.min(times), np.max(times)))
+    fit_result.fixed_stations = [str(obs.station_id) for obs in observations if str(obs.station_id) in kept]
 
     # Where the fitted part stands against typical fragmentation pressures and erosion onset energies
     try:

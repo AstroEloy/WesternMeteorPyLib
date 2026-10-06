@@ -146,6 +146,29 @@ def test_drag_fit_needs_its_own_time_offsets():
     assert abs(fit_fixed.v_init - 24000.0) > 3*fit_fixed.v_init_stddev
 
 
+def test_drag_fit_keeps_the_time_offsets_given_to_the_solver():
+    """ Time offsets given to the solver as fixed are kept in the fit instead of fitted again, as they do not come
+        from its lag model, e.g. for a fragment of a meteor that takes the time offsets of the main one. The
+        others are still fitted, and with all kept the velocity stays within its uncertainty of the true one. """
+
+    traj = _solve(24000.0, 5.3e-3, 0.005, 45e3, 45.0, v_init_drag=True, v_init_drag_time=np.inf)
+    assert traj.v_init_drag_fit.fixed_stations == []
+
+    traj_fixed = _solve(24000.0, 5.3e-3, 0.005, 45e3, 45.0, v_init_drag=True, v_init_drag_time=np.inf, 
+        fixed_times="S1:0.0")
+    fit = traj_fixed.v_init_drag_fit
+
+    assert fit.fixed_stations == ["S1"]
+    assert (fit.time_offsets["S1"] == 0.0) and (fit.time_offsets["S2"] != 0.0)
+
+    traj_all = _solve(24000.0, 5.3e-3, 0.005, 45e3, 45.0, v_init_drag=True, v_init_drag_time=np.inf, 
+        fixed_times="S0:0.0,S1:0.0,S2:0.0")
+    fit = traj_all.v_init_drag_fit
+
+    assert sorted(fit.fixed_stations) == ["S0", "S1", "S2"]
+    assert abs(fit.v_init - 24000.0) < 3*fit.v_init_stddev
+
+
 def test_drag_fit_ends_before_a_fragmentation():
     """ The fireball first seen at 60 km keeps 20% of its mass at 45 km, 0.9 s later. The single-body fit to all
         points puts its velocity 284 m/s too high, 11 times its uncertainty; fitting the default first second, or
@@ -330,6 +353,7 @@ def test_option_is_off_by_default_and_in_old_pickles():
 if __name__ == "__main__":
     test_drag_fit_recovers_the_initial_velocity_of_a_decelerating_fireball()
     test_drag_fit_needs_its_own_time_offsets()
+    test_drag_fit_keeps_the_time_offsets_given_to_the_solver()
     test_drag_fit_ends_before_a_fragmentation()
     test_drag_fit_of_a_meteoroid_that_ablates_until_it_stops_does_not_depend_on_metsim_step()
     test_drag_fit_keeps_the_velocity_of_a_meteor_that_does_not_decelerate()
