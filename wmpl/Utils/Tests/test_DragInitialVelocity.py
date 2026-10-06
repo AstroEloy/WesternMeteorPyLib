@@ -236,10 +236,10 @@ def test_drag_fit_keeps_the_velocity_of_a_meteor_that_does_not_decelerate():
 
 def test_fitted_points_without_deceleration_leave_the_ablation_coefficient_unconstrained():
     """ Points that do not decelerate, here a meteor first seen at 50 km whose lengths are given a slight
-        acceleration (e.g. from a scale error of a station), push B to the lower bound of the fit, which is then a
-        straight line over them. The ablation coefficient no longer changes the model, so its formal uncertainty
-        is 0: it is reported as not constrained instead, so that it is not suggested for the run back through
-        the atmosphere, and the report notes it. """
+        acceleration (e.g. from a scale error of a station), push B down until the model has no drag, not always
+        to the lower bound of the fit, which is then a straight line over them. The ablation coefficient no longer
+        changes the model, so its formal uncertainty is 0: it is reported as not constrained instead, so that it
+        is not suggested for the run back through the atmosphere, and the report notes it. """
 
     traj = _solve(20000.0, 1e-9, 0.005, 50e3, 45.0, v_init_drag=True)
     assert not traj.v_init_drag_fit.no_deceleration
