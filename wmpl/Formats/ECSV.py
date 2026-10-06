@@ -4,6 +4,7 @@ from __future__ import print_function, division, absolute_import
 
 import os
 import sys
+import copy
 import glob
 import datetime
 
@@ -12,6 +13,7 @@ import numpy as np
 from wmpl.Formats.GenericFunctions import addSolverOptions, solveTrajectoryGeneric, MeteorObservation, \
     prepareObservations, writeMiligInputFileMeteorObservation
 from wmpl.Utils.Math import vectNorm, vectMag, angleBetweenSphericalCoords
+from wmpl.Trajectory.Trajectory import ObservedPoints
 from wmpl.Utils.TrajConversions import J2000_JD, datetime2JD, altAz2RADec_vect, \
     equatorialCoordPrecession_vect, jd2Date
 
@@ -514,6 +516,115 @@ def fragmentComparison(traj, fragment_trajs, reuse_timing=True):
     return out_str
 
 
+def flareHeights(traj, ecsv_paths):
+    """ Times and heights on the solved main trajectory of the points of the main fragment flagged as flares
+        in ECSV files, also those not used in the trajectory (trajectory_use = False). Their lines of sight are
+        projected on the trajectory as the solver does with its own points, with the gravity drop, at their
+        times corrected by the time offset the trajectory applied to their station.
+
+    Arguments:
+        traj: [Trajectory] Solved trajectory of the main fragment.
+        ecsv_paths: [list] List of paths to ECSV files it was solved from.
+
+    Return:
+        [list] Dictionaries of the flare points sorted by time, with the station_id, jd (corrected), t_rel 
+            (s from the reference time of the trajectory), ht (m above sea level, as the heights of the 
+            trajectory), lat and lon (rad), and used (in the trajectory).
+    """
+
+    _, flare_meteors = loadECSVs(ecsv_paths, no_prepare=True, flares=True)
+    if not flare_meteors:
+        return []
+
+    _, input_meteors = loadECSVs(ecsv_paths, no_prepare=True)
+    offsets = appliedTimeOffsets(traj, input_meteors)
+
+    flare_obs, used = [], []
+    for meteor in flare_meteors:
+
+        if meteor.ecsv_file not in offsets:
+            print("The flares of station {:s} are skipped, as it is not in the main trajectory: {:s}".format(
+                str(meteor.station_id), meteor.ecsv_file))
+            continue
+
+        # Times from the reference time of the trajectory, with the time offset of the station
+        t_rel = (meteor.jdt_ref - traj.jdt_ref)*86400 + np.array(meteor.time_data) + offsets[meteor.ecsv_file]
+
+        # Precess from J2000 to the epoch of date, as the observations given to the solver
+        ra, dec = equatorialCoordPrecession_vect(J2000_JD.days, np.zeros_like(meteor.ra_data) + traj.jdt_ref, 
+            meteor.ra_data, meteor.dec_data)
+
+        flare_obs.append(ObservedPoints(traj.jdt_ref, ra, dec, t_rel, meteor.latitude, meteor.longitude, 
+            meteor.height, 1, station_id=meteor.station_id))
+        used.append(meteor.trajectory_use)
+
+    if not flare_obs:
+        return []
+
+    # Project the flares together with the observations of the trajectory, so that the gravity drop has the 
+    #   same reference, on a copy of the trajectory which is changed by the projection
+    traj_copy = copy.copy(traj)
+    observations = copy.deepcopy(traj.observations) + flare_obs
+    traj_copy.calcECIEqAltAz(traj.state_vect_mini, traj.radiant_eci_mini, observations)
+    traj_copy.calcLLA(traj.state_vect_mini, traj.radiant_eci_mini, observations)
+
+    flares = []
+    for obs, obs_used in zip(flare_obs, used):
+        for i in range(len(obs.time_data)):
+            flares.append({'station_id': str(obs.station_id), 'jd': obs.JD_data[i], 't_rel': obs.time_data[i],
+                'ht': obs.model_ht[i], 'lat': obs.model_lat[i], 'lon': obs.model_lon[i], 
+                'used': bool(obs_used[i])})
+
+    return sorted(flares, key=lambda flare: flare['jd'])
+
+
+def flareReport(flares, max_gap=0.1):
+    """ Report the times and heights of the flare points from flareHeights(), each one and grouped into flares:
+        points closer in time than max_gap (s), from any station, belong to the same flare.
+
+    Arguments:
+        flares: [list] Flare points from flareHeights().
+
+    Keyword arguments:
+        max_gap: [float] Largest time between the points of one flare (s), 0.1 by default.
+
+    Return:
+        [str] The report.
+    """
+
+    # Group the points into flares
+    groups = []
+    for flare in flares:
+        if groups and ((flare['jd'] - groups[-1][-1]['jd'])*86400 <= max_gap):
+            groups[-1].append(flare)
+        else:
+            groups.append([flare])
+
+    out_str = "\n"
+    out_str += "Flares\n"
+    out_str += "------\n"
+    out_str += "Points flagged as flares, projected on the main trajectory at their times corrected by the time\n"
+    out_str += "offsets of their stations. Heights above sea level, as in the rest of the report.\n"
+    out_str += "\n"
+    out_str += " #   Begin (UTC)               t beg (s)   t end (s)   Ht beg (km)   Ht end (km)   Stations\n"
+    for i, group in enumerate(groups):
+        out_str += "{:2d}   {:s}   {:9.3f}   {:9.3f}   {:11.3f}   {:11.3f}   {:s}\n".format(i + 1, 
+            jd2Date(group[0]['jd'], dt_obj=True).strftime("%Y-%m-%d %H:%M:%S.%f")[:-3], group[0]['t_rel'], 
+            group[-1]['t_rel'], group[0]['ht']/1000, group[-1]['ht']/1000, 
+            ", ".join(sorted(set(flare['station_id'] for flare in group))))
+
+    out_str += "\n"
+    out_str += "Flare points (t from the reference time of the trajectory):\n"
+    out_str += " #   Station       Time (UTC)                t (s)     Ht (km)   Used in the trajectory\n"
+    for i, group in enumerate(groups):
+        for flare in group:
+            out_str += "{:2d}   {:12s}  {:s}   {:8.3f}   {:8.3f}   {:s}\n".format(i + 1, flare['station_id'], 
+                jd2Date(flare['jd'], dt_obj=True).strftime("%Y-%m-%d %H:%M:%S.%f")[:-3], flare['t_rel'], 
+                flare['ht']/1000, "yes" if flare['used'] else "no")
+
+    return out_str
+
+
 def saveECSV(dir_path, meteor_observations, 
              network_name='RMS', x_res=None, y_res=None, photom_band=None, img_name=None, calib_stars=None, 
              fov_mid_azim=None, fov_mid_elev=None, fov_mid_rot_horiz=None, fov_horiz=None, fov_vert=None):
@@ -795,6 +906,21 @@ if __name__ == "__main__":
         show_jacchia=cml_args.jacchia,
         estimate_timing_vel=(False if cml_args.notimefit is None else cml_args.notimefit), \
         fixed_times=cml_args.fixedtimes, mc_noise_std=cml_args.mcstd, enable_OSM_plot=cml_args.enableOSM)
+
+
+    # Report the times and heights of the points flagged as flares, if any, also in the saved report
+    if (traj is not None) and (cml_args.solver == 'original'):
+
+        flares = flareHeights(traj, ecsv_paths)
+        if flares:
+
+            flare_report = flareReport(flares)
+            print(flare_report)
+
+            report_path = os.path.join(traj.output_dir, traj.file_name + '_report.txt')
+            if os.path.isfile(report_path):
+                with open(report_path, 'a') as f:
+                    f.write(flare_report)
 
 
     # Solve the trajectories of the additional fragments, after the main one

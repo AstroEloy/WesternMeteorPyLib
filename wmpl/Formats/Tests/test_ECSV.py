@@ -13,7 +13,7 @@ from types import SimpleNamespace
 
 import numpy as np
 
-from wmpl.Formats.ECSV import ecsvFragments, loadECSVs, appliedTimeOffsets, solverStationIDs
+from wmpl.Formats.ECSV import ecsvFragments, loadECSVs, appliedTimeOffsets, solverStationIDs, flareReport
 
 
 META = """# %ECSV 0.9
@@ -209,3 +209,16 @@ def test_flare_points(tmp_path):
     _, meteors = loadECSVs([path], no_prepare=True)
     assert np.allclose(np.degrees(meteors[0].azim_data), [120.0, 120.5, 121.5, 122.0, 122.5])
 
+
+def test_flare_report_groups_close_points():
+    """ Flare points closer in time than 0.1 s are one flare, whatever the station. """
+
+    jd0 = 2461070.9
+    flares = [{'station_id': station_id, 'jd': jd0 + t/86400, 't_rel': t, 'ht': ht, 'used': True}
+        for station_id, t, ht in [('A', 0.50, 90000), ('B', 0.52, 89900), ('A', 0.54, 89800), ('B', 1.50, 80000)]]
+
+    report = flareReport(flares)
+
+    assert " 1   " in report and " 2   " in report and " 3   " not in report
+    assert "A, B" in report
+    assert report.count("yes") == 4

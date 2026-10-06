@@ -51,6 +51,11 @@ per frame, with the columns of each additional fragment carrying its number as a
 fragment, fragment 0, is always solved from the columns without a suffix (or with the optional suffix 0),
 leaving out its points with `trajectory_use` = False (e.g. saturated flares kept in the file).
 
+Points of the main fragment flagged with `flare` = True are used in the trajectory like the others,
+unless they are also flagged with `trajectory_use` = False. Either way, the solver reports the time and
+height of every flare point and of every flare (points within 0.1 s, from any station), projected on the
+main trajectory, in the terminal and at the end of the saved report.
+
 ```
 python -m wmpl.Formats.ECSV /path/to/event/*.ecsv --fragments
 ```
