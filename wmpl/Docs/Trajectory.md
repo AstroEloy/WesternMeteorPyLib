@@ -53,8 +53,10 @@ leaving out its points with `trajectory_use` = False (e.g. saturated flares kept
 
 Points of the main fragment flagged with `flare` = True are used in the trajectory like the others,
 unless they are also flagged with `trajectory_use` = False. Either way, the solver reports the time and
-height of every flare point and of every flare (points within 0.1 s, from any station), projected on the
-main trajectory, in the terminal and at the end of the saved report.
+height of every flare point, projected on the main trajectory, in the terminal and at the end of the
+saved report: the flares of every station (its consecutive flare points), with the Monte Carlo
+uncertainties of their times and heights, and how the flares of different stations compare, as they need
+not be the same flare (two cameras can see a fireball flaring at different times).
 
 ```
 python -m wmpl.Formats.ECSV /path/to/event/*.ecsv --fragments
