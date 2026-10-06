@@ -127,7 +127,7 @@ python -m wmpl.Rebound.REBOUND --help
 | `--dt DAYS` | Timestep in days for `whfast` and `trace`. Default: `0.5`. Must be positive. Ignored by `ias15`. |
 | `--beta BETA` | Include solar radiation pressure and Poynting–Robertson drag with this beta. |
 | `--radius METRES` | Object radius in metres. With `--density`, beta is computed from it. Purely gravitational if not given. |
-| `--mass KG` | Object mass in kg at the trajectory's reference point (e.g. a photometric mass). With `--density`, beta is computed from it. It is also the mass of the run back through the atmosphere with `--atm_height`. |
+| `--mass KG` | Object mass in kg at the trajectory's reference point (e.g. a photometric mass). With `--density`, beta is computed from it. It is also the mass of the run back through the atmosphere with `--back_height`. |
 | `--density KG_M3` | Bulk density in kg/m³, used with `--radius` or `--mass`. Default: `3000`. |
 | `--compute_megno` | After the integration, measure the MEGNO chaos indicator of the nominal orbit. See [Chaos: MEGNO](#chaos-megno). |
 | `--verbose` | Print the progress of the simulation. |
