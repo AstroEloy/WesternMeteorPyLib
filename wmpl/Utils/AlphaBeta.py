@@ -246,7 +246,7 @@ def exponentialAtmosphereDensityRatio(ht_data, profile_hts, profile_dens, method
 
 
 def rescaleHeightToExponentialAtmosphere(lat, lon, ht_data, jd, method="column", return_density_ratio=False):
-    """ Given observed heights, rescale them from the real NRLMSISE model to the simplified exponential
+    """ Given observed heights, rescale them from the real MSIS atmosphere to the simplified exponential
         atmosphere model used by the Alpha-Beta procedure (see exponentialAtmosphereHeights()).
 
     Arguments:
@@ -367,10 +367,6 @@ def lagFitVelocity(time_data, lag_data, vel_data, v0, method='basinhopping', sig
     """ Fit the exponential-then-linear model (expLinearLag()/expLinearVelocity()) to the lag data,
         producing a smooth velocity curve to use in fitAlphaBeta() instead of the noisy
         point-to-point vel_data.
-
-        The smoothed velocity, v0 - |a1 a2| exp(|a2| t) and then decreasing, never exceeds v0, so for a meteor
-        already decelerating at its first point, where the trajectory's v0 is low, it is low too: do not fit the
-        initial velocity on it (see fitAlphaBeta(fit_v_init=True)).
 
         The model has 4 parameters (a1, a2, t0, decel - see expLinearLag()): an exponential
         deceleration phase up to a transition time t0, followed by a constant-deceleration phase.
@@ -5578,6 +5574,14 @@ if __name__ == "__main__":
         "faster and at least as accurate (see lagFitVelocity()'s docstring), but is a bounded "
         "multi-start over the transition time rather than a true global search.")
 
+    arg_parser.add_argument('--slopeunc', metavar='SLOPE_UNC', type=float, default=None, \
+        help="1-sigma uncertainty on the entry slope, in DEGREES, folded into the mass error "
+        "estimate when --errors is set. Default: the slope is treated as exactly known.")
+
+    arg_parser.add_argument('--densunc', metavar='DENS_UNC', type=float, default=None, \
+        help="1-sigma uncertainty on the bulk density, in kg/m^3, folded into the mass error "
+        "estimate when --errors is set. Default: the density is treated as exactly known.")
+
     arg_parser.add_argument('--fitvinit', action="store_true", \
         help="Fit the initial velocity together with alpha and beta (robust fit, on the observed velocities, "
         "as the lag-smoothed ones never exceed the trajectory's initial velocity), starting from the "
@@ -5591,14 +5595,6 @@ if __name__ == "__main__":
         "to the height with the same air column above, which the alpha-beta solution depends on; or 'density', "
         "to the height with the same local density, as before, which biases alpha and beta where the local "
         "scale height differs from 7.16 km.")
-
-    arg_parser.add_argument('--slopeunc', metavar='SLOPE_UNC', type=float, default=None, \
-        help="1-sigma uncertainty on the entry slope, in DEGREES, folded into the mass error "
-        "estimate when --errors is set. Default: the slope is treated as exactly known.")
-
-    arg_parser.add_argument('--densunc', metavar='DENS_UNC', type=float, default=None, \
-        help="1-sigma uncertainty on the bulk density, in kg/m^3, folded into the mass error "
-        "estimate when --errors is set. Default: the density is treated as exactly known.")
 
     arg_parser.add_argument('-x', '--hideplots', action="store_true", \
         help="Don't show the plots on the screen. Combine with --saveplots to only write them to disk.")
