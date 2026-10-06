@@ -5217,7 +5217,7 @@ if __name__ == "__main__":
         "the robust fit (method='robust'), propagates the fitted (ln alpha, ln beta) covariance "
         "into the masses, and draws an uncertainty ellipse on the survival diagram.")
 
-    arg_parser.add_argument('-r', '--lagrobust', action="store_true", \
+    arg_parser.add_argument('--lagrobust', action="store_true", \
         help="Use the faster robust least-squares fit (lagFitVelocity(method='robust')) for the "
         "lag-smoothing step, instead of the default global basinhopping search. Typically ~15x "
         "faster and at least as accurate (see lagFitVelocity()'s docstring), but is a bounded "
