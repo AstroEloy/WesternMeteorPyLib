@@ -13,7 +13,9 @@ from types import SimpleNamespace
 
 import numpy as np
 
-from wmpl.Formats.ECSV import ecsvFragments, loadECSVs, appliedTimeOffsets, solverStationIDs
+from wmpl.Formats.ECSV import ecsvFragments, loadECSVs, appliedTimeOffsets, solverStationIDs, \
+    originalPicksTrajectory
+from wmpl.Utils.Pickling import savePickle
 
 
 META = """# %ECSV 0.9
@@ -183,3 +185,22 @@ def test_applied_time_offsets_of_a_station_with_two_files(tmp_path):
     assert sorted(offsets) == sorted([path_a, path_b])
     assert np.isclose(offsets[path_a], 0.25, atol=1e-4)
     assert np.isclose(offsets[path_b], -0.1, atol=1e-4)
+
+
+def test_original_picks_trajectory(tmp_path):
+    """ With the Monte Carlo runs the solver returns the best run, and the solution with the original picks is 
+        the one saved with the results. """
+
+    best = SimpleNamespace(uncertainties=SimpleNamespace(), save_results=True, output_dir=str(tmp_path), 
+        file_name="20260130_102535", name="best run")
+    savePickle(SimpleNamespace(name="original picks"), str(tmp_path), "20260130_102535_trajectory.pickle")
+
+    assert originalPicksTrajectory(best).name == "original picks"
+
+    # Without the Monte Carlo runs the solver returns the solution with the original picks itself
+    no_mc = SimpleNamespace(**dict(best.__dict__, uncertainties=None))
+    assert originalPicksTrajectory(no_mc) is no_mc
+
+    # Without the saved results, there is no other solution than the given one
+    not_saved = SimpleNamespace(**dict(best.__dict__, save_results=False))
+    assert originalPicksTrajectory(not_saved) is not_saved
