@@ -127,7 +127,7 @@ python -m wmpl.Rebound.REBOUND --help
 | `--dt DAYS` | Timestep in days for `whfast` and `trace`. Default: `0.5`. Must be positive. Ignored by `ias15`. |
 | `--beta BETA` | Include solar radiation pressure and Poynting–Robertson drag with this beta. |
 | `--radius METRES` | Object radius in metres. With `--density`, beta is computed from it. Purely gravitational if not given. |
-| `--mass [KG]` | Object mass in kg. With `--density`, beta is computed from it. Without a value, the photometric mass of the light curve is used. |
+| `--mass KG` | Object mass in kg at the trajectory's reference point (e.g. a photometric mass). With `--density`, beta is computed from it. It is also the mass of the run back through the atmosphere with `--atm_height`. |
 | `--density KG_M3` | Bulk density in kg/m³, used with `--radius` or `--mass`. Default: `3000`. |
 | `--compute_megno` | After the integration, measure the MEGNO chaos indicator of the nominal orbit. See [Chaos: MEGNO](#chaos-megno). |
 | `--verbose` | Print the progress of the simulation. |
@@ -219,12 +219,10 @@ or let it be computed from a size and a density:
 python -m wmpl.Rebound.REBOUND traj.pickle --days 36525 --radius 1e-5 --density 3000
 ```
 
-A size is not what a meteor solution gives, so a mass works too, either explicitly or — with no value
-— as the photometric mass computed from the trajectory's own light curve:
+A size is not what a meteor solution gives, so a mass works too (e.g. a photometric mass):
 
 ```
 python -m wmpl.Rebound.REBOUND traj.pickle --days 36525 --mass 1e-6 --density 3000
-python -m wmpl.Rebound.REBOUND traj.pickle --days 36525 --mass --density 3000
 ```
 
 The mass is turned into the radius of the sphere of that mass and density, `s = (3m/(4πρ))^(1/3)`.
