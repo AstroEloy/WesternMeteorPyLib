@@ -20,8 +20,9 @@ import numpy as np
 
 from wmpl.Trajectory.Trajectory import Trajectory
 from wmpl.Utils.AtmosphereDensity import atmDensPoly, fitAtmPoly
-from wmpl.Utils.DragInitialVelocity import atmosphereDescription, breakupNotes, fitDragInitialVelocity, \
-    fittedTimeLimit
+from wmpl.MetSim.BackwardAtmIntegration import dragFitCoefficientNote
+from wmpl.Utils.DragInitialVelocity import atmosphereDescription, breakupNotes, decelerationNote, \
+    fitDragInitialVelocity, fittedTimeLimit
 from wmpl.Utils.Pickling import loadPickle
 from wmpl.Utils.TrajConversions import altAz2RADec, cartesian2Geo, eci2RaDec, geo2Cartesian, raDec2ECI
 
@@ -233,6 +234,32 @@ def test_drag_fit_keeps_the_velocity_of_a_meteor_that_does_not_decelerate():
     assert traj.v_init == fit.v_init and traj.v_init_stddev == fit.v_init_stddev
 
 
+def test_fitted_points_without_deceleration_leave_the_ablation_coefficient_unconstrained():
+    """ Points that do not decelerate, here a meteor first seen at 50 km whose lengths are given a slight
+        acceleration (e.g. from a scale error of a station), push B to the lower bound of the fit, which is then a
+        straight line over them. The ablation coefficient no longer changes the model, so its formal uncertainty
+        is 0: it is reported as not constrained instead, so that it is not suggested for the run back through
+        the atmosphere, and the report notes it. """
+
+    traj = _solve(20000.0, 1e-9, 0.005, 50e3, 45.0, v_init_drag=True)
+    assert not traj.v_init_drag_fit.no_deceleration
+    assert decelerationNote(traj.v_init_drag_fit) is None
+
+    for obs in traj.observations:
+        obs.state_vect_dist = obs.state_vect_dist + 0.5*300.0*obs.time_data**2
+    fit = fitDragInitialVelocity(traj)
+
+    assert fit.no_deceleration and (fit.drag_coeff < 1e-10)
+    assert np.isinf(fit.sigma_stddev)
+    assert "show no deceleration" in decelerationNote(fit)
+    assert "does not constrain it" in dragFitCoefficientNote(fit, 0.005)
+
+    example = loadPickle(EXAMPLE_DIR, EXAMPLE_PICKLE)
+    example.v_init_drag, example.v_init_drag_fit = True, fit
+    report = example.saveReport(".", "unused.txt", verbose=False, save_results=False)
+    assert ("sigma = not constrained" in report) and ("NOTE: The fitted points show no deceleration" in report)
+
+
 def test_without_the_drag_fit_the_solver_warns_when_the_straight_line_is_low():
     """ With the option off, a parabola over the straight line's points flags the fireball first seen at 60 km,
         whose straight line is 617 m/s low, as 978 +/- 137 m/s, and suggests the drag fit; the meteor without
@@ -357,6 +384,7 @@ if __name__ == "__main__":
     test_drag_fit_ends_before_a_fragmentation()
     test_drag_fit_of_a_meteoroid_that_ablates_until_it_stops_does_not_depend_on_metsim_step()
     test_drag_fit_keeps_the_velocity_of_a_meteor_that_does_not_decelerate()
+    test_fitted_points_without_deceleration_leave_the_ablation_coefficient_unconstrained()
     test_without_the_drag_fit_the_solver_warns_when_the_straight_line_is_low()
     test_drag_fit_notes_typical_fragmentation_pressures_and_erosion_energies()
     test_a_height_limit_alone_is_the_only_limit_and_both_end_at_the_first_reached()
