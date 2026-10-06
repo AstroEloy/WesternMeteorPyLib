@@ -9,9 +9,11 @@ Run with pytest:
 
 from __future__ import print_function, division, absolute_import
 
+from types import SimpleNamespace
+
 import numpy as np
 
-from wmpl.Formats.ECSV import ecsvFragments, loadECSVs
+from wmpl.Formats.ECSV import ecsvFragments, loadECSVs, appliedTimeOffsets, solverStationIDs
 
 
 META = """# %ECSV 0.9
@@ -109,3 +111,75 @@ def test_previous_format_is_unchanged(tmp_path):
 
     assert len(meteors[0].time_data) == 6
     assert list(meteors[0].mag_data) == [2.0, 1.9, 1.8, 1.7, 1.6, 1.5]
+
+
+def test_main_fragment_with_the_zero_suffix(tmp_path):
+    """ The GFE standard makes the suffix 0 of the main fragment optional (azimuth0 is azimuth). """
+
+    path = writeEcsv(tmp_path/"b.ecsv", "XX0002", fragments=False)
+    with open(path) as f:
+        lines = f.read().splitlines()
+
+    header = [i for i, line in enumerate(lines) if not line.startswith('#')][0]
+    lines[header] = ",".join(name + '0' if name in FRAGMENT else name for name in lines[header].split(','))
+    with open(path, 'w') as f:
+        f.write("\n".join(lines) + "\n")
+
+    assert ecsvFragments([path]) == []
+
+    _, meteors = loadECSVs([path], no_prepare=True)
+    assert len(meteors[0].time_data) == 6
+
+
+def test_station_without_points_is_skipped(tmp_path):
+    """ A station whose main fragment points are all flagged as not to be used (in any letter case) is 
+        skipped, and so is a set of files without any points. """
+
+    path = writeEcsv(tmp_path/"a.ecsv", "XX0001")
+    with open(path) as f:
+        text = f.read()
+    with open(path, 'w') as f:
+        f.write(text.replace(',True,', ',false,'))
+
+    jdt_ref, meteors = loadECSVs([path], no_prepare=True)
+    assert (jdt_ref is None) and (meteors == [])
+
+    # Fragment 1 is not flagged, so it still loads
+    _, meteors = loadECSVs([path], no_prepare=True, fragment=1)
+    assert len(meteors) == 1
+
+
+def test_solver_station_ids():
+    """ A station added again gets the suffix _2, _3, ..., as in Trajectory.infillTrajectory(). """
+
+    meteors = [SimpleNamespace(station_id=station_id) for station_id in ('A', 'B', 'A', 'A', 'B')]
+
+    assert solverStationIDs(meteors) == ['A', 'B', 'A_2', 'A_3', 'B_2']
+
+
+def test_applied_time_offsets_of_a_station_with_two_files(tmp_path):
+    """ The offset applied to every observation is matched to its own input file, also when a station has
+        two (e.g. one per video file), which the solver names XX0001 and XX0001_2. """
+
+    path_a = writeEcsv(tmp_path/"a.ecsv", "XX0001", fragments=False)
+    path_b = writeEcsv(tmp_path/"b.ecsv", "XX0001", fragments=False)
+
+    # The second file has a point less, at other times
+    with open(path_b) as f:
+        lines = f.read().splitlines()
+    with open(path_b, 'w') as f:
+        f.write("\n".join(line.replace('2026-01-30T10:25:36.', '2026-01-30T10:25:37.') for line in lines[:-1]) 
+            + "\n")
+
+    _, meteors = loadECSVs([path_a, path_b], no_prepare=True)
+
+    # Solved observations, with the times of the two files shifted by 0.25 s and -0.1 s
+    observations = [SimpleNamespace(station_id=station_id, 
+        JD_data=meteor.jdt_ref + (np.array(meteor.time_data) + shift)/86400) 
+        for station_id, meteor, shift in zip(['XX0001', 'XX0001_2'], meteors, [0.25, -0.1])]
+
+    offsets = appliedTimeOffsets(SimpleNamespace(observations=observations), meteors)
+
+    assert sorted(offsets) == sorted([path_a, path_b])
+    assert np.isclose(offsets[path_a], 0.25, atol=1e-4)
+    assert np.isclose(offsets[path_b], -0.1, atol=1e-4)
