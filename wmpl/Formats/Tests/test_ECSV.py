@@ -9,12 +9,13 @@ Run with pytest:
 
 from __future__ import print_function, division, absolute_import
 
+from collections import OrderedDict
 from types import SimpleNamespace
 
 import numpy as np
 
 from wmpl.Formats.ECSV import ecsvFragments, loadECSVs, appliedTimeOffsets, solverStationIDs, flareReport, \
-    originalPicksTrajectory
+    originalPicksTrajectory, timeReferenceStations
 from wmpl.Utils.Pickling import savePickle
 
 
@@ -219,16 +220,25 @@ def test_flare_report_compares_stations():
     jd0 = 2461070.9
 
     def point(station_id, t, ht, std=True):
-        return {'station_id': station_id, 'jd': jd0 + t/86400, 't_rel': t, 'ht': ht, 'used': True, 
-            'frame_dt': 0.04, 'ht_rate': -10000.0, 't_std': 0.005 if std else None, 
-            'ht_std': 50.0 if std else None}
+        flare = {'station_id': station_id, 'jd': jd0 + t/86400, 't_rel': t, 'ht': ht, 'used': True, 
+            'frame_dt': 0.04, 'ht_rate': -10000.0, 't_std': None, 'ht_std': None, 't_std_mc': None, 
+            'ht_std_mc': None}
+
+        # Uncertainties from the Monte Carlo runs, and with the duration of the frame, as from flareHeights()
+        if std:
+            frame_std = 0.04/np.sqrt(12)
+            flare.update(t_std_mc=0.005, ht_std_mc=50.0, t_std=np.hypot(0.005, frame_std), 
+                ht_std=np.hypot(50.0, 10000.0*frame_std))
+
+        return flare
 
     # Station A sees one flare, station B the same one and a second one 0.6 s later
     flares = [point('A', 0.50, 90000), point('A', 0.54, 89600), point('B', 0.52, 89800), point('B', 0.56, 89400), 
         point('B', 1.20, 83000), point('B', 1.24, 82600)]
 
-    report = flareReport(flares)
+    report = flareReport(flares, ref_stations=['A'])
 
+    assert "clock of the reference station A" in report
     assert report.count("point(s)") == 3
     assert " 1 A -  2 B: times overlap, heights +0.000 km apart" in report
     assert "consistent" in report
@@ -259,3 +269,23 @@ def test_original_picks_trajectory(tmp_path):
     # Without the saved results, there is no other solution than the given one
     not_saved = SimpleNamespace(**dict(best.__dict__, save_results=False))
     assert originalPicksTrajectory(not_saved) is not_saved
+
+
+def test_time_reference_stations():
+    """ The times refer to the clocks of the stations whose time offsets are not estimated: the reference 
+        station, or the ones with fixed offsets. The Monte Carlo runs always estimate the offsets. """
+
+    def solution(estimate_timing_vel, stations_time_dict):
+        return SimpleNamespace(estimate_timing_vel=estimate_timing_vel, 
+            stations_time_dict=OrderedDict(stations_time_dict))
+
+    assert timeReferenceStations(solution(True, [('A', True), ('B', 0), ('C', True)])) == ['B']
+    assert timeReferenceStations(solution(True, [('A', 0.1), ('B', 0.0), ('C', True)])) == ['A', 'B']
+
+    # Without the estimation of the time offsets, the times are those of the clocks of every station
+    no_timing = solution(False, [])
+    assert timeReferenceStations(no_timing) == []
+    assert "times from the clock of each station" in flareReport([], ref_stations=[])
+
+    # ... but the Monte Carlo runs estimate them anyway, so the uncertainties refer to their reference station
+    assert timeReferenceStations(no_timing, mc_trajs=[solution(True, [('A', 0), ('B', True)])]) == ['A']
