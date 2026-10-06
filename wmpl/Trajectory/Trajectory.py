@@ -47,7 +47,7 @@ except ImportError:
 
 import wmpl
 from wmpl.Trajectory.Orbit import calcOrbit
-from wmpl.Utils.DragInitialVelocity import LINE_BIAS_SIGMA, breakupNotes, decelerationNote, estimateLineBias, \
+from wmpl.Utils.DragInitialVelocity import LINE_BIAS_SIGMA, breakupNotes, estimateLineBias, \
     fitDragInitialVelocity, fittedTimeLimit
 from wmpl.Utils.Math import vectNorm, vectMag, meanAngle, findClosestPoints, RMSD, \
     angleBetweenSphericalCoords, angleBetweenVectors, lineFunc, normalizeAngleWrap, confidenceInterval
@@ -2488,8 +2488,8 @@ class Trajectory(object):
                 velocity at the first point of a meteor that already decelerates there, by hundreds of m/s for
                 fireballs first seen at 45-60 km. False by default, and then the solver warns when a parabola
                 over the straight line's points puts the initial velocity more than 2 sigma above it (see
-                wmpl.Utils.DragInitialVelocity.estimateLineBias). If the fit fails or does not fit better than the
-                straight line, the straight-line velocity is kept. The erosion of the body is absorbed by the
+                wmpl.Utils.DragInitialVelocity.estimateLineBias). If the fit fails, does not fit better than the
+                straight line or measures no deceleration, the straight-line velocity is kept. The erosion of the body is absorbed by the
                 fitted ablation coefficient, but the points must follow the body: a significant wake of eroded
                 grains behind it shifts the measured centroids and can bias the velocity by hundreds of m/s.
             v_init_drag_time: [float] Only points within this time from the first point, in seconds, are used in
@@ -4512,9 +4512,8 @@ class Trajectory(object):
                 out_str += "  Dynamic pressure {:.4f} to {:.4f} MPa, energy received {:.3g} to {:.3g} MJ/m^2\n" \
                     .format(fit.dyn_pressure_range[0]/1e6, fit.dyn_pressure_range[1]/1e6, fit.energy_range[0]/1e6,
                     fit.energy_range[1]/1e6)
-            for note in [decelerationNote(fit)] + breakupNotes(fit):
-                if note is not None:
-                    out_str += "  NOTE: " + note + "\n"
+            for note in breakupNotes(fit):
+                out_str += "  NOTE: " + note + "\n"
             out_str += "\n"
 
         elif getattr(self, "v_init_drag", False):
@@ -6704,7 +6703,7 @@ class Trajectory(object):
                 t_max=fittedTimeLimit(self.v_init_drag_time, self.v_init_drag_ht),
                 ht_min=(None if self.v_init_drag_ht is None else 1000*self.v_init_drag_ht), return_reason=True)
 
-            # Keep the straight-line velocity if the fit failed or does not fit better
+            # Keep the straight-line velocity if the fit failed, does not fit better or measures no deceleration
             if self.v_init_drag_fit is not None:
 
                 self.v_init = self.v_init_drag_fit.v_init
@@ -6718,9 +6717,8 @@ class Trajectory(object):
                 self.jacchia_fit = self.fitJacchiaLag(self.observations)
 
                 if self.verbose:
-                    for note in [decelerationNote(self.v_init_drag_fit)] + breakupNotes(self.v_init_drag_fit):
-                        if note is not None:
-                            print("NOTE: " + note)
+                    for note in breakupNotes(self.v_init_drag_fit):
+                        print("NOTE: " + note)
 
             elif self.verbose:
                 print(self._dragFitRejectedText())
