@@ -661,7 +661,8 @@ def flareHeights(traj, ecsv_paths, mc_trajs=None):
     Return:
         [list] Dictionaries of the flare points sorted by time, with the station_id, jd, t_rel (s from the
             reference time of the trajectory), ht (m above sea level), used, frame_dt (s), ht_rate (rate of 
-            change of the height of the trajectory at that time, m/s), and t_std (s) and ht_std (m), which are
+            change of the height of the trajectory at that time, m/s), the uncertainties t_std (s) and ht_std 
+            (m), and their parts from the Monte Carlo runs only, t_std_mc and ht_std_mc. The uncertainties are
             None without Monte Carlo runs.
     """
 
@@ -706,16 +707,48 @@ def flareHeights(traj, ecsv_paths, mc_trajs=None):
         if np.sum(near) < 3:
             near = np.ones_like(traj_t, dtype=bool)
         flare['ht_rate'] = np.polyfit(traj_t[near], traj_ht[near], 1)[0]
-        flare['t_std'] = flare['ht_std'] = None
+        flare['t_std'] = flare['ht_std'] = flare['t_std_mc'] = flare['ht_std_mc'] = None
         if len(mc_values[key]) > 1:
-            flare['t_std'], flare['ht_std'] = np.std(np.array(mc_values[key]), axis=0)
+            flare['t_std_mc'], flare['ht_std_mc'] = np.std(np.array(mc_values[key]), axis=0)
+
+            # The flare happened at any time within its frame, so its time is only known to within the
+            #   duration of the frame (a uniform distribution), and the height of the meteor at that time to 
+            #   within how much it changes in that time
+            frame_std = flare['frame_dt']/np.sqrt(12)
+            flare['t_std'] = np.hypot(flare['t_std_mc'], frame_std)
+            flare['ht_std'] = np.hypot(flare['ht_std_mc'], flare['ht_rate']*frame_std)
 
         flares.append(flare)
 
     return sorted(flares, key=lambda flare: flare['jd'])
 
 
-def flareReport(flares, max_gap=0.1, match_window=1.0):
+def timeReferenceStations(traj, mc_trajs=None):
+    """ Stations whose time offset a solution does not estimate, so that the times of all stations refer to
+        their clocks: the reference station (by default the one with the longest track, whose offset is fixed
+        to 0), or the stations with fixed time offsets.
+
+    Arguments:
+        traj: [Trajectory] Solved trajectory.
+
+    Keyword arguments:
+        mc_trajs: [list] Its Monte Carlo runs, which estimate the time offsets even if the solution does not,
+            and give the uncertainties of the times.
+
+    Return:
+        [list] Station IDs, empty if the time offsets were not estimated.
+    """
+
+    timing_traj = mc_trajs[0] if mc_trajs else traj
+    stations_time_dict = getattr(timing_traj, 'stations_time_dict', None)
+    if (not timing_traj.estimate_timing_vel) or (not stations_time_dict):
+        return []
+
+    return [str(station_id) for station_id, status in stations_time_dict.items() 
+        if not isinstance(status, bool)]
+
+
+def flareReport(flares, max_gap=0.1, match_window=1.0, ref_stations=None):
     """ Report the flare points from flareHeights(): the flares of every station (its flare points no further
         apart than max_gap), the points, and how the flares of different stations compare, as they need not be 
         the same: each one against the closest one in time of every other station within match_window.
@@ -726,6 +759,8 @@ def flareReport(flares, max_gap=0.1, match_window=1.0):
     Keyword arguments:
         max_gap: [float] Largest time between the points of one flare of a station (s), 0.1 by default.
         match_window: [float] Largest time between the flares of two stations compared (s), 1 by default.
+        ref_stations: [list] Stations whose clocks the times refer to, from timeReferenceStations(), to say
+            so in the report. None by default, to leave it out.
 
     Return:
         [str] The report.
@@ -754,8 +789,22 @@ def flareReport(flares, max_gap=0.1, match_window=1.0):
     out_str += "------\n"
     out_str += "Points flagged as flares, used in the trajectory or not, projected on the main trajectory at the\n"
     out_str += "times of their frames corrected by the time offsets of their stations. Heights above sea level.\n"
+    # Clocks the times refer to
+    if ref_stations is not None:
+        if len(ref_stations) == 1:
+            out_str += "Times relative to the clock of the reference station {:s}, whose time offset is not\n" \
+                .format(ref_stations[0])
+            out_str += "estimated: their absolute accuracy depends on how well it was synchronised (e.g. NTP, GPS).\n"
+        elif ref_stations:
+            out_str += "Times relative to the clocks of the stations with fixed time offsets, {:s}: their\n" \
+                .format(", ".join(ref_stations))
+            out_str += "absolute accuracy depends on how well those clocks were synchronised (e.g. NTP, GPS).\n"
+        else:
+            out_str += "The time offsets of the stations were not estimated: times from the clock of each station.\n"
     if uncertain:
-        out_str += "Uncertainties (1 sigma) from projecting them on the Monte Carlo runs.\n"
+        out_str += "Uncertainties (1 sigma) from projecting them on the Monte Carlo runs, and from the duration\n"
+        out_str += "of the frame the flare was seen in, at any time within it (in time, and in height as the\n"
+        out_str += "meteor descends during the frame).\n"
     else:
         out_str += "Without the Monte Carlo runs the times and heights have no uncertainties.\n"
     out_str += "\n"
@@ -833,9 +882,12 @@ def flareReport(flares, max_gap=0.1, match_window=1.0):
 
                 if (pa['t_std'] is not None) and (pb['t_std'] is not None):
 
-                    t_sig = np.sqrt(pa['t_std']**2 + pb['t_std']**2 + (pa['frame_dt']**2 + pb['frame_dt']**2)/12)
-                    ht_sig = np.sqrt(pa['ht_std']**2 + pb['ht_std']**2 
-                        + (pa['ht_rate']**2)*(pa['t_std']**2 + pb['t_std']**2))
+                    # The time of each flare is known to within its frame, but the heights are compared at the 
+                    #   same time along the trajectory, which does not depend on when the flares happened within 
+                    #   their frames, only on the Monte Carlo uncertainties
+                    t_sig = np.hypot(pa['t_std'], pb['t_std'])
+                    ht_sig = np.sqrt(pa['ht_std_mc']**2 + pb['ht_std_mc']**2 
+                        + (pa['ht_rate']**2)*(pa['t_std_mc']**2 + pb['t_std_mc']**2))
 
                     consistent = (gap <= 3*t_sig) and (abs(dht) <= 3*ht_sig)
                     line += " ({:.1f} and {:.1f} sigma): {:s}".format(gap/t_sig, abs(dht)/ht_sig, 
@@ -1134,11 +1186,13 @@ if __name__ == "__main__":
 
         # On the solution with the original picks, which the saved report describes, with uncertainties from
         #   the Monte Carlo runs
-        flares = flareHeights(originalPicksTrajectory(traj), ecsv_paths,
-            mc_trajs=getattr(traj, 'mc_traj_list', None))
+        traj_orig = originalPicksTrajectory(traj)
+        mc_trajs = getattr(traj, 'mc_traj_list', None)
+        flares = flareHeights(traj_orig, ecsv_paths, mc_trajs=mc_trajs)
         if flares:
 
-            flare_report = flareReport(flares)
+            ref_stations = timeReferenceStations(traj_orig, mc_trajs=mc_trajs)
+            flare_report = flareReport(flares, ref_stations=ref_stations)
             print(flare_report)
 
             report_path = os.path.join(traj.output_dir, traj.file_name + '_report.txt')
