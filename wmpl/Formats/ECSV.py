@@ -304,6 +304,28 @@ def appliedTimeOffsets(traj, input_meteors):
     return offsets
 
 
+def originalPicksTrajectory(traj):
+    """ The solution with the original picks of a trajectory solved with the Monte Carlo runs, for which the 
+        solver returns the best of the runs instead. It is loaded from the pickle saved with the results.
+
+    Arguments:
+        traj: [Trajectory] Solved trajectory, from solveTrajectoryGeneric().
+
+    Return:
+        [Trajectory] The solution with the original picks, with the uncertainties of the Monte Carlo runs. The
+            given trajectory if it was solved without them, or if its results were not saved.
+    """
+
+    if (traj.uncertainties is None) or (not traj.save_results):
+        return traj
+
+    traj_path = os.path.join(traj.output_dir, traj.file_name + '_trajectory.pickle')
+    if not os.path.isfile(traj_path):
+        return traj
+
+    return loadPickle(*os.path.split(traj_path))
+
+
 def solveFragmentTrajectories(traj, ecsv_paths, reuse_timing=True):
     """ Solve the trajectories of the additional fragments described in ECSV files (see ecsvFragments()),
         after the main one and with the same solver options. Each one is saved in a fragment_k folder of the
@@ -315,10 +337,12 @@ def solveFragmentTrajectories(traj, ecsv_paths, reuse_timing=True):
 
     Keyword arguments:
         reuse_timing: [bool] Fix the time offsets of the stations to the ones of the main trajectory (default),
-            instead of estimating them again from the fewer points of every fragment.
+            those of its solution with the original picks, instead of estimating them again from the fewer 
+            points of every fragment.
 
     Return:
-        [list] (fragment, trajectory) of every fragment solved.
+        [list] (fragment, trajectory) of every fragment solved, with the solution with the original picks 
+            (see originalPicksTrajectory()).
     """
 
     if not hasattr(traj, 'solver_kwargs'):
@@ -333,7 +357,7 @@ def solveFragmentTrajectories(traj, ecsv_paths, reuse_timing=True):
         return []
 
     _, input_meteors = loadECSVs(ecsv_paths, no_prepare=True)
-    main_offsets = appliedTimeOffsets(traj, input_meteors)
+    main_offsets = appliedTimeOffsets(originalPicksTrajectory(traj), input_meteors)
 
     fragment_trajs = []
     for fragment in ecsvFragments(ecsv_paths):
@@ -374,7 +398,7 @@ def solveFragmentTrajectories(traj, ecsv_paths, reuse_timing=True):
             print("The trajectory of fragment {:d} could not be solved.".format(fragment))
             continue
 
-        fragment_trajs.append((fragment, frag_traj))
+        fragment_trajs.append((fragment, originalPicksTrajectory(frag_traj)))
 
     return fragment_trajs
 
@@ -384,7 +408,8 @@ def fragmentComparison(traj, fragment_trajs, reuse_timing=True):
         whether they are consistent with it.
 
     Arguments:
-        traj: [Trajectory] Solved trajectory of the main fragment.
+        traj: [Trajectory] Solved trajectory of the main fragment, the solution with the original picks (see
+            originalPicksTrajectory()).
         fragment_trajs: [list] (fragment, trajectory) pairs, from solveFragmentTrajectories().
 
     Keyword arguments:
@@ -477,7 +502,7 @@ def fragmentComparison(traj, fragment_trajs, reuse_timing=True):
     if traj.uncertainties is None:
         out_str += "Without the Monte Carlo runs the differences cannot be compared with the uncertainties.\n"
     else:
-        out_str += "The solutions are the best Monte Carlo runs, so even the same data differ by about 1 sigma.\n"
+        out_str += "Solutions with the original picks, with the uncertainties (1 sigma) of the Monte Carlo runs.\n"
 
     if not fragment_trajs:
         out_str += "\nNone of the additional fragments could be solved.\n"
@@ -1115,10 +1140,8 @@ if __name__ == "__main__":
 
         # On the solution with the original picks, which the saved report describes, with uncertainties from
         #   the Monte Carlo runs
-        traj_path = os.path.join(traj.output_dir, traj.file_name + '_trajectory.pickle')
-        traj_orig = loadPickle(*os.path.split(traj_path)) if os.path.isfile(traj_path) else traj
-
-        flares = flareHeights(traj_orig, ecsv_paths, mc_trajs=getattr(traj, 'mc_traj_list', None))
+        flares = flareHeights(originalPicksTrajectory(traj), ecsv_paths,
+            mc_trajs=getattr(traj, 'mc_traj_list', None))
         if flares:
 
             flare_report = flareReport(flares)
@@ -1139,4 +1162,5 @@ if __name__ == "__main__":
 
         else:
             fragment_trajs = solveFragmentTrajectories(traj, ecsv_paths, reuse_timing=(not cml_args.fragtimefit))
-            print(fragmentComparison(traj, fragment_trajs, reuse_timing=(not cml_args.fragtimefit)))
+            print(fragmentComparison(originalPicksTrajectory(traj), fragment_trajs, 
+                reuse_timing=(not cml_args.fragtimefit)))
