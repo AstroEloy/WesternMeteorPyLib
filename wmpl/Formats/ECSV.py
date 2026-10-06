@@ -21,7 +21,32 @@ from wmpl.Utils.TrajConversions import J2000_JD, datetime2JD, altAz2RADec_vect, 
 FPS = 15
 
 
-def loadECSVs(ecsv_paths, no_prepare=False):
+def ecsvFragments(ecsv_paths):
+    """ Find the additional fragments described in ECSV files, whose columns have a numeric suffix (e.g. ra1,
+        azimuth1) as in Appendix 4 of the GFE standard.
+
+    Arguments:
+        ecsv_paths: [list] List of paths to ECSV files.
+
+    Return:
+        [list] Sorted numbers of the additional fragments (1, 2, ...), empty if there are none.
+    """
+
+    fragments = set()
+    for ecsv_file in ecsv_paths:
+
+        with open(ecsv_file) as f:
+            header = next((line for line in f if not line.startswith('#')), '')
+
+        for name in header.split(','):
+            name = name.strip()
+            if name.startswith('azimuth') and name[len('azimuth'):].isdigit():
+                fragments.add(int(name[len('azimuth'):]))
+
+    return sorted(fragments)
+
+
+def loadECSVs(ecsv_paths, no_prepare=False, fragment=0):
     """ Load meteor observations from ECSV files. 
     
     Arguments:
@@ -29,8 +54,15 @@ def loadECSVs(ecsv_paths, no_prepare=False):
 
     Keyword arguments:
         no_prepare: [bool] If True, only load the observations, do not prepare them for the solver.
+        fragment: [int] Fragment to load. 0 (default) is the main fragment, without the points flagged as not
+            to be used in its trajectory (trajectory_use = False). An additional fragment k is read from the
+            columns with the suffix k (e.g. azimuth1), as in Appendix 4 of the GFE standard; files without
+            them are skipped.
     
     """
+
+    # Suffix of the columns of the fragment
+    suffix = str(fragment) if fragment else ''
 
     # Init meteor objects
     meteor_list = []
@@ -83,14 +115,20 @@ def loadECSVs(ecsv_paths, no_prepare=False):
             data = np.loadtxt(ecsv_file, comments='#', delimiter=delimiter, dtype=str)
 
             # Determine the column indices from the header
-            header = data[0].tolist()
-            dt_indx = header.index('datetime')
-            azim_indx = header.index('azimuth')
-            alt_indx = header.index('altitude')
-            x_indx = header.index('x_image')
-            y_indx = header.index('y_image')
+            header = [name.strip() for name in data[0].tolist()]
 
-            if 'mag_data' in header:
+            # Skip the files which do not describe this fragment
+            if ('azimuth' + suffix) not in header:
+                continue
+
+            dt_indx = header.index('datetime' + suffix)
+            azim_indx = header.index('azimuth' + suffix)
+            alt_indx = header.index('altitude' + suffix)
+            x_indx = header.index('x_image' + suffix)
+            y_indx = header.index('y_image' + suffix)
+
+            # Only the main fragment has photometry
+            if ('mag_data' in header) and (not fragment):
                 mag_indx = header.index('mag_data')
             else:
                 mag_indx = None
@@ -99,9 +137,13 @@ def loadECSVs(ecsv_paths, no_prepare=False):
             # Skip the header
             data = data[1:]
 
-            # Skip the rows without the main fragment (fragment 0), i.e. the frames on which only other
-            #   fragments were measured (their columns have a numeric suffix, e.g. azimuth1)
+            # Skip the rows without this fragment, e.g. for the main fragment (fragment 0) the frames on which
+            #   only other fragments were measured (their columns have a numeric suffix, e.g. azimuth1)
             data = data[np.char.strip(data[:, azim_indx]) != '']
+
+            # Leave out the points of the main fragment not to be used in its trajectory
+            if (not fragment) and ('trajectory_use' in header):
+                data = data[np.char.strip(data[:, header.index('trajectory_use')]) != 'False']
 
             # Unpack data
             dt_data, azim_data, alt_data, x_data, y_data = data[:, dt_indx], data[:, azim_indx], \
