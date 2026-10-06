@@ -201,7 +201,8 @@ class DragVelocityFit(object):
         # Stations whose time offsets were kept instead of fitted, as they were given to the solver as fixed
         self.fixed_stations = []
 
-        # Whether the fitted points show no deceleration, B ending at its lower bound (see decelerationNote())
+        # Whether the fitted points show no deceleration, B going down until the model has no drag (see
+        #   decelerationNote())
         self.no_deceleration = False
 
         # Along the fitted model over the fitted points (see breakupNotes): the range of the dynamic pressure
@@ -361,8 +362,8 @@ def _breakupProfile(fit, const, traj, v_rotation, n_top=200):
 
 
 def decelerationNote(fit):
-    """ Note that the fitted points show no deceleration, if so: B ended at the lower bound of the fit, which is
-        then a straight line over them, that the ablation coefficient does not change, so it is not constrained.
+    """ Note that the fitted points show no deceleration, if so: B went down until the model has no drag, so the fit
+        is a straight line over them, that the ablation coefficient does not change, so it is not constrained.
         The velocity is then the slope of these points alone, which over a short part, or one seen mostly by one
         station, can differ from the straight line over the first part.
 
@@ -376,8 +377,8 @@ def decelerationNote(fit):
     if not getattr(fit, "no_deceleration", False):
         return None
 
-    return ("The fitted points show no deceleration (B ended at the lower bound of the fit, {:.1e} m^2/kg), so the "
-        "fit is a straight line over them: the velocity is the slope of these {:d} points from {:d} station(s) "
+    return ("The fitted points show no deceleration (B went down to {:.1e} m^2/kg, where the model has no drag), so "
+        "the fit is a straight line over them: the velocity is the slope of these {:d} points from {:d} station(s) "
         "alone, and the ablation coefficient is not constrained. If the meteor decelerates further on, a longer fit "
         "that is still free of fragmentation (--vinitdragtime) can measure it.").format(fit.drag_coeff,
         fit.n_points, len(fit.time_offsets))
@@ -545,10 +546,12 @@ def fitDragInitialVelocity(traj, ht_min=None, t_max=None, fine_dt=0.001, return_
     cov = np.linalg.pinv(best.jac.T.dot(best.jac))*np.sum(best.fun**2)/dof
     stddev = np.sqrt(np.abs(np.diag(cov)))
 
-    # With B at its lower bound the fitted points show no deceleration, and the ablation coefficient does not
-    #   change the model, so it is not constrained, although its formal uncertainty is then 0
-    no_deceleration = params[1] <= lb[1] + 1e-3
-    sigma_stddev = np.inf if no_deceleration else stddev[3]
+    # A parameter that does not change the model lengths is not constrained, although its formal uncertainty is
+    #   then 0. When the fitted points show no deceleration, B goes down until MetSim gives no drag at all: an
+    #   e-fold change of B then moves the lengths by less than a millimetre, and so does any ablation coefficient
+    no_deceleration = np.max(np.abs(best.jac[:, 1])) < 1e-3
+    sigma_stddev = np.inf if (no_deceleration or (np.max(np.abs(best.jac[:, 3]))*(ub[3] - lb[3]) < 1e-3)) \
+        else stddev[3]
 
     time_offsets = {obs.station_id: 0.0 for obs in observations}
     for k, i in enumerate(offset_stations):
