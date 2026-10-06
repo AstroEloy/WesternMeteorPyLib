@@ -494,6 +494,22 @@ def fragmentComparison(traj, fragment_trajs, reuse_timing=True):
     def stationsPoints(t):
         return "{:d} / {:d}".format(len(t.observations), sum(len(obs.time_data) for obs in t.observations))
 
+    def velocityMethod(t):
+        """ How the initial velocity of a solution was estimated when the drag and ablation fit was asked for, 
+            which starts at the first point of each solution, or None if it was not (the straight line). """
+
+        fit = getattr(t, 'v_init_drag_fit', None)
+        if fit is not None:
+            return "drag and ablation fit to {:d} points, {:.2f} to {:.2f} s, {:.2f} to {:.2f} km".format(
+                fit.n_points, fit.t_range[0], fit.t_range[1], fit.ht_range[1]/1000, fit.ht_range[0]/1000)
+
+        if getattr(t, 'v_init_drag', False):
+            reason = getattr(t, 'v_init_drag_rejection', None)
+            return "straight line, as the drag fit was not used{:s}".format(
+                "" if reason is None else ": " + reason)
+
+        return None
+
     out_str = "\n"
     out_str += "Additional fragments compared with the main fragment (fragment 0)\n"
     out_str += "-----------------------------------------------------------------\n"
@@ -503,6 +519,8 @@ def fragmentComparison(traj, fragment_trajs, reuse_timing=True):
         out_str += "Without the Monte Carlo runs the differences cannot be compared with the uncertainties.\n"
     else:
         out_str += "Solutions with the original picks, with the uncertainties (1 sigma) of the Monte Carlo runs.\n"
+    if velocityMethod(traj) is not None:
+        out_str += "Initial velocity of the main fragment from the {:s}\n".format(velocityMethod(traj))
 
     if not fragment_trajs:
         out_str += "\nNone of the additional fragments could be solved.\n"
@@ -525,6 +543,15 @@ def fragmentComparison(traj, fragment_trajs, reuse_timing=True):
             v_g_diff = frag_traj.orbit.v_g - traj.orbit.v_g
             out_str += "  Geocentric velocity   : {:.3f} km/s ({:+.3f} km/s{:s})\n".format(frag_traj.orbit.v_g/1000, 
                 v_g_diff/1000, sigmaStr(v_g_diff, valueSigma(traj, 'v_g'), valueSigma(frag_traj, 'v_g')))
+
+        # The initial velocity of every solution is the one at its first point, from the method it could use
+        frag_method = velocityMethod(frag_traj)
+        if (velocityMethod(traj) is not None) or (frag_method is not None):
+            out_str += "  Initial velocity from : the {:s}\n".format(frag_method or "straight line")
+            if hasattr(traj, 'v_init_drag_fit') and ((traj.v_init_drag_fit is None) 
+                != (getattr(frag_traj, 'v_init_drag_fit', None) is None)):
+                out_str += "  NOTE: not the method of the main fragment, so the velocities are not directly " \
+                    "comparable\n"
 
         v_init_diff = frag_traj.v_init - traj.v_init
         out_str += "  Initial velocity      : {:.3f} km/s ({:+.3f} km/s{:s})\n".format(frag_traj.v_init/1000, 

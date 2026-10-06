@@ -81,6 +81,11 @@ about 1 sigma even for identical data), and the differences are also given in un
 uncertainty. The time offsets reused by the fragments are also those of the main solution with the original
 picks, the ones in its report.
 
+If the solver fits the initial velocity with a drag and ablation model, it does so for every fragment from its
+own first point, so the velocity of a fragment is the one at its first point, and a height limit of the fit
+leaves out the fragments that appear below it, which keep the straight line. The comparison says which method
+every solution used.
+
 ## The trajectory pickle
 
 A successful run writes `<event>_trajectory.pickle` (plus plots and a text report) into the output
