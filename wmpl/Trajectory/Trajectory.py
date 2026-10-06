@@ -4503,6 +4503,8 @@ class Trajectory(object):
             out_str += "  sigma = {:.4f} +/- {:.4f} s^2/km^2, B = {:.4e} m^2/kg\n".format(fit.sigma, fit.sigma_stddev,
                 fit.drag_coeff)
             out_str += "  RMS   = {:.2f} m (straight line: {:.2f} m)\n".format(fit.rms, fit.rms_linear)
+            if getattr(fit, "fixed_stations", None):
+                out_str += "  Time offsets kept, not fitted again: {:s}\n".format(", ".join(fit.fixed_stations))
             if getattr(fit, "atmosphere", None) is not None:
                 out_str += "  Atmosphere: {:s}\n".format(fit.atmosphere)
             if getattr(fit, "dyn_pressure_range", None) is not None:
