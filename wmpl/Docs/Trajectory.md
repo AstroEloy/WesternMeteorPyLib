@@ -63,8 +63,11 @@ python -m wmpl.Formats.ECSV /path/to/event/*.ecsv --fragments
 | `--fragments` | After the main fragment, solve every additional fragment seen from at least 2 stations with the same options (Monte Carlo included), save each one in a `fragment_k` folder of the output directory, and print how it differs from the main one: radiant, velocities, heights, distance from the main path and how far ahead of the main fragment it is at the same time. |
 | `--fragtimefit` | Estimate the station time offsets for every fragment, instead of reusing those of the main trajectory, which its larger number of points constrains better. |
 
-With the Monte Carlo runs the differences are also given in units of the combined uncertainty, but the
-solutions compared are the best Monte Carlo runs, so even identical data differ by about 1 sigma.
+Two solutions differ slightly even for identical data, as each goes through its own iterations of the
+timing and velocity estimation: in tests, by about 0.001 deg and tens of metres with well spread stations,
+and up to about 0.1 deg and a few hundred metres with nearly parallel ones. With the Monte Carlo runs the
+differences are also given in units of the combined uncertainty, but the solutions compared are the best
+Monte Carlo runs, so even identical data differ by about 1 sigma.
 
 ## The trajectory pickle
 
