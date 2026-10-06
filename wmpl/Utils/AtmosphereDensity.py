@@ -3,6 +3,7 @@
 from __future__ import print_function, division, absolute_import
 
 import datetime
+import os
 
 import numpy as np
 import matplotlib.pyplot as plt
@@ -12,14 +13,21 @@ from pymsis import calculate, Variable
 from wmpl.Utils.TrajConversions import jd2Date, datetime2JD
 
 
+# setAtmosphere() also keeps the choice in these environment variables, which every process started from this one
+#   inherits. A process started by multiprocessing with "spawn", the default on macOS and Windows (e.g. the
+#   trajectory solver's Monte Carlo runs), imports this module afresh, and without them would fall back to
+#   NRLMSISE-00 and the input data's date
+MSIS_VERSION_ENV = "WMPL_MSIS_VERSION"
+MSIS_JD_ENV = "WMPL_MSIS_JD"
+
 # MSIS version used for all atmosphere density evaluations. "00" is NRLMSISE-00, the model WMPL has
 #   always used, "2.0" and "2.1" are the newer NRLMSIS 2.x releases which give up to 20% lower
 #   densities around 85 and 120 km
-MSIS_VERSION = "00"
+MSIS_VERSION = os.environ.get(MSIS_VERSION_ENV, "00")
 
 # Julian date used instead of the one passed to getAtmDensity. Only set when the date cannot be taken
 #   from the input data, e.g. when the model is not run on a trajectory pickle
-MSIS_JD = None
+MSIS_JD = float(os.environ[MSIS_JD_ENV]) if os.environ.get(MSIS_JD_ENV) else None
 
 
 
@@ -31,7 +39,7 @@ def addAtmosphereArguments(arg_parser):
         arg_parser: [ArgumentParser] Argument parser to add the options to.
     """
 
-    arg_parser.add_argument('--atm', metavar='MSIS_VERSION', type=str, default=MSIS_VERSION, \
+    arg_parser.add_argument('--atm', metavar='MSIS_VERSION', type=str, default="00", \
         choices=['00', '2.0', '2.1'], \
         help="MSIS atmosphere model: 00 for NRLMSISE-00 (default), 2.0 or 2.1 for NRLMSIS 2.x.")
 
@@ -54,6 +62,13 @@ def setAtmosphere(cml_args):
 
     MSIS_JD = None if cml_args.atmtime is None \
         else datetime2JD(datetime.datetime.strptime(cml_args.atmtime, "%Y%m%d-%H%M%S"))
+
+    # For the processes started from this one (see MSIS_VERSION_ENV)
+    os.environ[MSIS_VERSION_ENV] = MSIS_VERSION
+    if MSIS_JD is None:
+        os.environ.pop(MSIS_JD_ENV, None)
+    else:
+        os.environ[MSIS_JD_ENV] = repr(MSIS_JD)
 
 
 
