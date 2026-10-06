@@ -47,7 +47,7 @@ def ecsvFragments(ecsv_paths):
     return sorted(fragments)
 
 
-def loadECSVs(ecsv_paths, no_prepare=False, fragment=0):
+def loadECSVs(ecsv_paths, no_prepare=False, fragment=0, flares=False):
     """ Load meteor observations from ECSV files. 
     
     Arguments:
@@ -59,6 +59,9 @@ def loadECSVs(ecsv_paths, no_prepare=False, fragment=0):
             to be used in its trajectory (trajectory_use = False). An additional fragment k is read from the
             columns with the suffix k (e.g. azimuth1), as in Appendix 4 of the GFE standard, which makes the
             suffix 0 optional for the main fragment; files without the columns of the fragment are skipped.
+        flares: [bool] Only load the points of the main fragment flagged as flares (flare = True), also those
+            not used in its trajectory, whose flags are kept in the trajectory_use array of every observation.
+            The minimum number of points of an observation does not apply.
     
     """
 
@@ -143,13 +146,27 @@ def loadECSVs(ecsv_paths, no_prepare=False, fragment=0):
             #   only other fragments were measured (their columns have a numeric suffix, e.g. azimuth1)
             data = data[np.char.strip(data[:, azim_indx]) != '']
 
-            # Leave out the points of the main fragment not to be used in its trajectory
+            # Whether the points of the main fragment are to be used in its trajectory
             if (not fragment) and ('trajectory_use' in header):
-                data = data[np.char.lower(np.char.strip(data[:, header.index('trajectory_use')])) != 'false']
+                trajectory_use = np.char.lower(np.char.strip(data[:, header.index('trajectory_use')])) != 'false'
+            else:
+                trajectory_use = np.ones(len(data), dtype=bool)
+
+            # Only the flares (used in the trajectory or not), or only the points used in the trajectory
+            if flares:
+                if (fragment) or ('flare' not in header):
+                    continue
+
+                flare = np.char.lower(np.char.strip(data[:, header.index('flare')])) == 'true'
+                data, trajectory_use = data[flare], trajectory_use[flare]
+
+            else:
+                data = data[trajectory_use]
 
             if len(data) == 0:
-                print("The station {:s} has no points of fragment {:d}, skipping: {:s}".format(station_id, 
-                    fragment, ecsv_file))
+                if not flares:
+                    print("The station {:s} has no points of fragment {:d}, skipping: {:s}".format(station_id, 
+                        fragment, ecsv_file))
                 continue
 
             # Unpack data
@@ -209,6 +226,12 @@ def loadECSVs(ecsv_paths, no_prepare=False, fragment=0):
 
             # Keep the file the observation comes from, to match the fragments in it to the main one
             meteor.ecsv_file = ecsv_file
+
+            # Flags of the points, in their order sorted by finish()
+            if flares:
+                meteor.trajectory_use = trajectory_use[np.argsort(time_data, kind='stable')]
+                meteor_list.append(meteor)
+                continue
 
 
             # Check that the observation has a minimum number of points

@@ -183,3 +183,29 @@ def test_applied_time_offsets_of_a_station_with_two_files(tmp_path):
     assert sorted(offsets) == sorted([path_a, path_b])
     assert np.isclose(offsets[path_a], 0.25, atol=1e-4)
     assert np.isclose(offsets[path_b], -0.1, atol=1e-4)
+
+
+def test_flare_points(tmp_path):
+    """ With flares=True only the main fragment points flagged as flares are loaded, also the ones not used in
+        the trajectory, with their flags. """
+
+    path = writeEcsv(tmp_path/"a.ecsv", "XX0001")
+    with open(path) as f:
+        lines = f.read().splitlines()
+
+    # Flag frames 2 (not used in the trajectory) and 4 as flares
+    lines = [line.replace(",2,False,False,", ",2,True,False,").replace(",4,False,True,", ",4,True,True,") 
+        for line in lines]
+    with open(path, 'w') as f:
+        f.write("\n".join(lines) + "\n")
+
+    _, meteors = loadECSVs([path], no_prepare=True, flares=True)
+
+    assert len(meteors) == 1
+    assert np.allclose(np.degrees(meteors[0].azim_data), [121.0, 122.0])
+    assert list(meteors[0].trajectory_use) == [False, True]
+
+    # The trajectory still uses the flare of frame 4, and not the one of frame 2
+    _, meteors = loadECSVs([path], no_prepare=True)
+    assert np.allclose(np.degrees(meteors[0].azim_data), [120.0, 120.5, 121.5, 122.0, 122.5])
+
