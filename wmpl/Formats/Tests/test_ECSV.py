@@ -14,7 +14,7 @@ from types import SimpleNamespace
 import numpy as np
 
 from wmpl.Formats.ECSV import ecsvFragments, loadECSVs, appliedTimeOffsets, solverStationIDs, \
-    originalPicksTrajectory
+    originalPicksTrajectory, fragmentComparison
 from wmpl.Utils.Pickling import savePickle
 
 
@@ -204,3 +204,40 @@ def test_original_picks_trajectory(tmp_path):
     # Without the saved results, there is no other solution than the given one
     not_saved = SimpleNamespace(**dict(best.__dict__, save_results=False))
     assert originalPicksTrajectory(not_saved) is not_saved
+
+
+def test_fragment_comparison_says_how_the_initial_velocities_were_estimated():
+    """ With the drag fit of the initial velocity asked for, the comparison says which method every solution 
+        used, as the fit starts at the first point of each one and can be rejected for a fragment (e.g. born
+        below its height limit), and warns when the main fragment used the other one. """
+
+    def solution(t0, v_init, **kwargs):
+        """ A solution along a straight vertical path at 20 km/s, seen from t0 for 1 s. """
+
+        t = t0 + np.arange(0, 1.0, 0.1)
+        model_eci = np.array([[6.4e6 + 1e5 - 2e4*ti, 0.0, 0.0] for ti in t])
+        obs = SimpleNamespace(JD_data=2461000.5 + t/86400, model_eci=model_eci, time_data=t, 
+            ignore_list=np.zeros(len(t), dtype=int), ignore_station=False)
+
+        return SimpleNamespace(observations=[obs], radiant_eci_mini=np.array([1.0, 0.0, 0.0]), 
+            state_vect_mini=np.array([6.5e6, 0.0, 0.0]), orbit=None, uncertainties=None, v_init=v_init, 
+            rbeg_ele=1e5 - 2e4*t0, rend_ele=1e5 - 2e4*(t0 + 0.9), rbeg_jd=obs.JD_data[0], **kwargs)
+
+    drag_fit = SimpleNamespace(n_points=10, t_range=(0.0, 0.9), ht_range=(82000.0, 100000.0))
+    main = solution(0.0, 20500.0, v_init_drag=True, v_init_drag_fit=drag_fit, v_init_drag_rejection=None)
+    fragment = solution(0.5, 19000.0, v_init_drag=True, v_init_drag_fit=None, 
+        v_init_drag_rejection="no points in the fitted part")
+
+    report = fragmentComparison(main, [(1, fragment)])
+
+    assert "Initial velocity of the main fragment from the drag and ablation fit to 10 points, 0.00 to 0.90 s, " \
+        "100.00 to 82.00 km" in report
+    assert "Initial velocity from : the straight line, as the drag fit was not used: no points in the fitted " \
+        "part" in report
+    assert "NOTE: not the method of the main fragment" in report
+
+    # Without the drag fit, nothing is said about the method
+    plain = [solution(t0, v) for t0, v in [(0.0, 20500.0), (0.5, 19000.0)]]
+    report = fragmentComparison(plain[0], [(1, plain[1])])
+
+    assert ("Initial velocity from" not in report) and ("Initial velocity of the main" not in report)
