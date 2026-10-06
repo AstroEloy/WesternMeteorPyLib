@@ -452,6 +452,9 @@ def fragmentComparison(traj, fragment_trajs, reuse_timing=True):
     else:
         out_str += "The solutions are the best Monte Carlo runs, so even the same data differ by about 1 sigma.\n"
 
+    if not fragment_trajs:
+        out_str += "\nNone of the additional fragments could be solved.\n"
+
     for fragment, frag_traj in fragment_trajs:
 
         out_str += "\n"
@@ -777,5 +780,10 @@ if __name__ == "__main__":
     # Solve the trajectories of the additional fragments, after the main one
     if cml_args.fragments and (traj is not None):
 
-        fragment_trajs = solveFragmentTrajectories(traj, ecsv_paths, reuse_timing=(not cml_args.fragtimefit))
-        print(fragmentComparison(traj, fragment_trajs, reuse_timing=(not cml_args.fragtimefit)))
+        if not ecsvFragments(ecsv_paths):
+            print()
+            print("There are no additional fragments in the ECSV files.")
+
+        else:
+            fragment_trajs = solveFragmentTrajectories(traj, ecsv_paths, reuse_timing=(not cml_args.fragtimefit))
+            print(fragmentComparison(traj, fragment_trajs, reuse_timing=(not cml_args.fragtimefit)))
