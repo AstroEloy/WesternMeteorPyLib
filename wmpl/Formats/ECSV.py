@@ -15,6 +15,7 @@ from wmpl.Formats.GenericFunctions import addSolverOptions, solveTrajectoryGener
     prepareObservations, writeMiligInputFileMeteorObservation
 from wmpl.Utils.Math import vectNorm, vectMag, angleBetweenSphericalCoords
 from wmpl.Trajectory.Trajectory import ObservedPoints
+from wmpl.Utils.Pickling import loadPickle
 from wmpl.Utils.TrajConversions import J2000_JD, datetime2JD, altAz2RADec_vect, \
     equatorialCoordPrecession_vect, jd2Date
 
@@ -517,50 +518,87 @@ def fragmentComparison(traj, fragment_trajs, reuse_timing=True):
     return out_str
 
 
-def flareHeights(traj, ecsv_paths):
-    """ Times and heights on the solved main trajectory of the points of the main fragment flagged as flares
-        in ECSV files, also those not used in the trajectory (trajectory_use = False). Their lines of sight are
-        projected on the trajectory as the solver does with its own points, with the gravity drop, at their
-        times corrected by the time offset the trajectory applied to their station.
+def loadFlares(ecsv_paths):
+    """ Load the points of the main fragment flagged as flares in ECSV files, and the observations the main
+        trajectory is solved from, which give the time offsets of their stations.
 
     Arguments:
-        traj: [Trajectory] Solved trajectory of the main fragment.
-        ecsv_paths: [list] List of paths to ECSV files it was solved from.
+        ecsv_paths: [list] List of paths to ECSV files.
 
     Return:
-        [list] Dictionaries of the flare points sorted by time, with the station_id, jd (corrected), t_rel 
-            (s from the reference time of the trajectory), ht (m above sea level, as the heights of the 
-            trajectory), lat and lon (rad), and used (in the trajectory).
+        (flare_meteors, input_meteors): [tuple] Lists of MeteorObservation objects from loadECSVs(), with
+            flares=True and without.
     """
 
     _, flare_meteors = loadECSVs(ecsv_paths, no_prepare=True, flares=True)
-    if not flare_meteors:
-        return []
-
     _, input_meteors = loadECSVs(ecsv_paths, no_prepare=True)
-    offsets = appliedTimeOffsets(traj, input_meteors)
 
-    flare_obs, used = [], []
+    return flare_meteors, input_meteors
+
+
+def projectFlares(traj, flare_meteors, input_meteors, noise_sigma=None, ang_res_std=None, time_diffs=None):
+    """ Project the flare points on a solved trajectory as the solver does with its own points, with the
+        gravity drop, at their times corrected by the time offset the trajectory applied to their station.
+
+    Arguments:
+        traj: [Trajectory] Solved trajectory of the main fragment, or one of its Monte Carlo runs.
+        flare_meteors: [list] Flare points, from loadFlares().
+        input_meteors: [list] Observations the trajectory was solved from, from loadFlares().
+
+    Keyword arguments:
+        noise_sigma: [float] If given, Gaussian noise is added to the lines of sight of the flares as in the
+            Monte Carlo runs of the solver: this many times the angular residual of their station.
+        ang_res_std: [dict] Angular residual (rad) of every station ID, used with noise_sigma.
+        time_diffs: [dict] Time offsets (s) of station IDs to add to the applied ones, e.g. those a Monte Carlo
+            run estimated, which it does not apply to the times of its observations.
+
+    Return:
+        [dict] For the key (ecsv_file, index) of every flare point of a station in the trajectory: its 
+            station_id, jd (corrected time), ht (m above sea level, as the heights of the trajectory), used 
+            (in the trajectory) and frame_dt (time step of the station, s).
+    """
+
+    offsets = appliedTimeOffsets(traj, input_meteors)
+    station_ids = dict(zip([meteor.ecsv_file for meteor in input_meteors], solverStationIDs(input_meteors)))
+    frame_dts = {meteor.ecsv_file: np.median(np.diff(meteor.time_data)) for meteor in input_meteors}
+
+    flare_obs, obs_meteors = [], []
     for meteor in flare_meteors:
 
         if meteor.ecsv_file not in offsets:
-            print("The flares of station {:s} are skipped, as it is not in the main trajectory: {:s}".format(
-                str(meteor.station_id), meteor.ecsv_file))
             continue
 
         # Times from the reference time of the trajectory, with the time offset of the station
         t_rel = (meteor.jdt_ref - traj.jdt_ref)*86400 + np.array(meteor.time_data) + offsets[meteor.ecsv_file]
+        if time_diffs is not None:
+            t_rel += time_diffs.get(station_ids[meteor.ecsv_file], 0.0)
 
         # Precess from J2000 to the epoch of date, as the observations given to the solver
         ra, dec = equatorialCoordPrecession_vect(J2000_JD.days, np.zeros_like(meteor.ra_data) + traj.jdt_ref, 
             meteor.ra_data, meteor.dec_data)
 
-        flare_obs.append(ObservedPoints(traj.jdt_ref, ra, dec, t_rel, meteor.latitude, meteor.longitude, 
-            meteor.height, 1, station_id=meteor.station_id))
-        used.append(meteor.trajectory_use)
+        obs = ObservedPoints(traj.jdt_ref, ra, dec, t_rel, meteor.latitude, meteor.longitude, meteor.height, 1, 
+            station_id=station_ids[meteor.ecsv_file])
+
+        # Add noise to the lines of sight as the Monte Carlo runs of the solver do
+        if noise_sigma is not None:
+
+            sigma = noise_sigma*abs(ang_res_std.get(str(obs.station_id), np.nan))
+            if not (sigma >= 0):
+                sigma = np.radians(1)
+
+            for i, rhat in enumerate(obs.meas_eci_los):
+                rhat = vectNorm(rhat)
+                uhat = vectNorm(np.cross(rhat, np.array([0.0, 0.0, 1.0])))
+                vhat = vectNorm(np.cross(uhat, rhat))
+                obs.meas_eci_los[i] = vectNorm(rhat + np.random.normal(0, sigma)*uhat 
+                    + np.random.normal(0, sigma)*vhat)
+
+        flare_obs.append(obs)
+        obs_meteors.append(meteor)
 
     if not flare_obs:
-        return []
+        return {}
 
     # Project the flares together with the observations of the trajectory, so that the gravity drop has the 
     #   same reference, on a copy of the trajectory which is changed by the projection
@@ -569,59 +607,214 @@ def flareHeights(traj, ecsv_paths):
     traj_copy.calcECIEqAltAz(traj.state_vect_mini, traj.radiant_eci_mini, observations)
     traj_copy.calcLLA(traj.state_vect_mini, traj.radiant_eci_mini, observations)
 
-    flares = []
-    for obs, obs_used in zip(flare_obs, used):
+    projected = {}
+    for meteor, obs in zip(obs_meteors, flare_obs):
         for i in range(len(obs.time_data)):
-            flares.append({'station_id': str(obs.station_id), 'jd': obs.JD_data[i], 't_rel': obs.time_data[i],
-                'ht': obs.model_ht[i], 'lat': obs.model_lat[i], 'lon': obs.model_lon[i], 
-                'used': bool(obs_used[i])})
+            projected[(meteor.ecsv_file, i)] = {'station_id': str(obs.station_id), 'jd': obs.JD_data[i], 
+                'ht': obs.model_ht[i], 'used': bool(meteor.trajectory_use[i]), 
+                'frame_dt': frame_dts[meteor.ecsv_file]}
+
+    return projected
+
+
+def flareHeights(traj, ecsv_paths, mc_trajs=None):
+    """ Times and heights of the points of the main fragment flagged as flares in ECSV files, used in its
+        trajectory or not (trajectory_use = False), on a solution of it (see projectFlares()), with their
+        uncertainties from its Monte Carlo runs, if given.
+
+    Arguments:
+        traj: [Trajectory] Solved trajectory of the main fragment.
+        ecsv_paths: [list] List of paths to ECSV files it was solved from.
+
+    Keyword arguments:
+        mc_trajs: [list] Its Monte Carlo runs. The flares are projected on each one, with the noise of the runs
+            on their lines of sight and the time offsets each run estimated, and the standard deviations of 
+            their times and heights are their uncertainties.
+
+    Return:
+        [list] Dictionaries of the flare points sorted by time, with the station_id, jd, t_rel (s from the
+            reference time of the trajectory), ht (m above sea level), used, frame_dt (s), ht_rate (rate of 
+            change of the height of the trajectory at that time, m/s), and t_std (s) and ht_std (m), which are
+            None without Monte Carlo runs.
+    """
+
+    flare_meteors, input_meteors = loadFlares(ecsv_paths)
+    if not flare_meteors:
+        return []
+
+    projected = projectFlares(traj, flare_meteors, input_meteors)
+
+    for meteor in flare_meteors:
+        if (meteor.ecsv_file, 0) not in projected:
+            print("The flares of station {:s} are skipped, as it is not in the main trajectory: {:s}".format(
+                str(meteor.station_id), meteor.ecsv_file))
+
+    # Scatter of the times and heights of the flares in the Monte Carlo runs
+    mc_values = {key: [] for key in projected}
+    if mc_trajs:
+
+        ang_res_std = {str(obs.station_id): obs.ang_res_std for obs in traj.observations}
+        for mc_traj in mc_trajs:
+
+            mc_projected = projectFlares(mc_traj, flare_meteors, input_meteors, noise_sigma=traj.mc_noise_std, 
+                ang_res_std=ang_res_std, time_diffs={str(obs.station_id): t_diff for obs, t_diff 
+                    in zip(mc_traj.observations, mc_traj.time_diffs_final)})
+
+            for key, flare in mc_projected.items():
+                if key in mc_values:
+                    mc_values[key].append(((flare['jd'] - projected[key]['jd'])*86400, flare['ht']))
+
+    # Heights of the trajectory in time, to compare flares seen at different times
+    used_obs = [obs for obs in traj.observations if not obs.ignore_station]
+    traj_t = np.concatenate([obs.time_data[obs.ignore_list == 0] for obs in used_obs])
+    traj_ht = np.concatenate([obs.model_ht[obs.ignore_list == 0] for obs in used_obs])
+
+    flares = []
+    for key, flare in projected.items():
+
+        flare['t_rel'] = (flare['jd'] - traj.jdt_ref)*86400
+
+        # Local rate of change of the height, from the points of the trajectory within 0.3 s
+        near = np.abs(traj_t - flare['t_rel']) <= 0.3
+        if np.sum(near) < 3:
+            near = np.ones_like(traj_t, dtype=bool)
+        flare['ht_rate'] = np.polyfit(traj_t[near], traj_ht[near], 1)[0]
+        flare['t_std'] = flare['ht_std'] = None
+        if len(mc_values[key]) > 1:
+            flare['t_std'], flare['ht_std'] = np.std(np.array(mc_values[key]), axis=0)
+
+        flares.append(flare)
 
     return sorted(flares, key=lambda flare: flare['jd'])
 
 
-def flareReport(flares, max_gap=0.1):
-    """ Report the times and heights of the flare points from flareHeights(), each one and grouped into flares:
-        points closer in time than max_gap (s), from any station, belong to the same flare.
+def flareReport(flares, max_gap=0.1, match_window=1.0):
+    """ Report the flare points from flareHeights(): the flares of every station (its flare points no further
+        apart than max_gap), the points, and how the flares of different stations compare, as they need not be 
+        the same: each one against the closest one in time of every other station within match_window.
 
     Arguments:
         flares: [list] Flare points from flareHeights().
 
     Keyword arguments:
-        max_gap: [float] Largest time between the points of one flare (s), 0.1 by default.
+        max_gap: [float] Largest time between the points of one flare of a station (s), 0.1 by default.
+        match_window: [float] Largest time between the flares of two stations compared (s), 1 by default.
 
     Return:
         [str] The report.
     """
 
-    # Group the points into flares
-    groups = []
-    for flare in flares:
-        if groups and ((flare['jd'] - groups[-1][-1]['jd'])*86400 <= max_gap):
-            groups[-1].append(flare)
-        else:
-            groups.append([flare])
+    def valueStr(value, std, fmt):
+        return (fmt + " +/- " + fmt).format(value, std) if (std is not None) else fmt.format(value)
+
+    def timeStr(jd):
+        return jd2Date(jd, dt_obj=True).strftime("%H:%M:%S.%f")[:-3]
+
+    # Flares of every station: its consecutive flare points
+    events = []
+    for station_id in sorted(set(flare['station_id'] for flare in flares)):
+        for flare in [flare for flare in flares if flare['station_id'] == station_id]:
+            if events and (events[-1][0]['station_id'] == station_id) \
+                and ((flare['jd'] - events[-1][-1]['jd'])*86400 <= max_gap):
+                events[-1].append(flare)
+            else:
+                events.append([flare])
+
+    uncertain = any(flare['ht_std'] is not None for flare in flares)
 
     out_str = "\n"
     out_str += "Flares\n"
     out_str += "------\n"
-    out_str += "Points flagged as flares, projected on the main trajectory at their times corrected by the time\n"
-    out_str += "offsets of their stations. Heights above sea level, as in the rest of the report.\n"
+    out_str += "Points flagged as flares, used in the trajectory or not, projected on the main trajectory at the\n"
+    out_str += "times of their frames corrected by the time offsets of their stations. Heights above sea level.\n"
+    if uncertain:
+        out_str += "Uncertainties (1 sigma) from projecting them on the Monte Carlo runs.\n"
+    else:
+        out_str += "Without the Monte Carlo runs the times and heights have no uncertainties.\n"
     out_str += "\n"
-    out_str += " #   Begin (UTC)               t beg (s)   t end (s)   Ht beg (km)   Ht end (km)   Stations\n"
-    for i, group in enumerate(groups):
-        out_str += "{:2d}   {:s}   {:9.3f}   {:9.3f}   {:11.3f}   {:11.3f}   {:s}\n".format(i + 1, 
-            jd2Date(group[0]['jd'], dt_obj=True).strftime("%Y-%m-%d %H:%M:%S.%f")[:-3], group[0]['t_rel'], 
-            group[-1]['t_rel'], group[0]['ht']/1000, group[-1]['ht']/1000, 
-            ", ".join(sorted(set(flare['station_id'] for flare in group))))
+
+    out_str += "Flares of every station (t from the reference time of the trajectory):\n"
+    for i, event in enumerate(events):
+        used = sum(flare['used'] for flare in event)
+        out_str += "{:2d}  {:12s} {:s}-{:s} UTC, {:d} point(s), {:s} used in the trajectory\n".format(i + 1, 
+            event[0]['station_id'], timeStr(event[0]['jd']), timeStr(event[-1]['jd']), len(event), 
+            "all" if used == len(event) else ("none" if used == 0 else "{:d}".format(used)))
+        out_str += "      Begin: t = {:s} s, ht = {:s} km\n".format(valueStr(event[0]['t_rel'], 
+            event[0]['t_std'], "{:.4f}"), valueStr(event[0]['ht']/1000, 
+            None if event[0]['ht_std'] is None else event[0]['ht_std']/1000, "{:.3f}"))
+        if len(event) > 1:
+            out_str += "      End:   t = {:s} s, ht = {:s} km\n".format(valueStr(event[-1]['t_rel'], 
+                event[-1]['t_std'], "{:.4f}"), valueStr(event[-1]['ht']/1000, 
+                None if event[-1]['ht_std'] is None else event[-1]['ht_std']/1000, "{:.3f}"))
 
     out_str += "\n"
-    out_str += "Flare points (t from the reference time of the trajectory):\n"
-    out_str += " #   Station       Time (UTC)                t (s)     Ht (km)   Used in the trajectory\n"
-    for i, group in enumerate(groups):
-        for flare in group:
-            out_str += "{:2d}   {:12s}  {:s}   {:8.3f}   {:8.3f}   {:s}\n".format(i + 1, flare['station_id'], 
-                jd2Date(flare['jd'], dt_obj=True).strftime("%Y-%m-%d %H:%M:%S.%f")[:-3], flare['t_rel'], 
-                flare['ht']/1000, "yes" if flare['used'] else "no")
+    out_str += "Flare points:\n"
+    out_str += "Flare  Station       Time (UTC)      t (s)                  Ht (km)               Used\n"
+    for i, event in enumerate(events):
+        for flare in event:
+            out_str += "{:5d}  {:12s}  {:s}    {:21s}  {:20s}  {:s}\n".format(i + 1, flare['station_id'], 
+                timeStr(flare['jd']), valueStr(flare['t_rel'], flare['t_std'], "{:.4f}"), 
+                valueStr(flare['ht']/1000, None if flare['ht_std'] is None else flare['ht_std']/1000, "{:.3f}"), 
+                "yes" if flare['used'] else "no")
+
+    # Compare the flares of different stations, which need not be the same: e.g. a fireball can show two flares
+    #   which one camera sees at other times than another
+    stations = sorted(set(event[0]['station_id'] for event in events))
+    if len(stations) > 1:
+
+        def compare(a, b):
+            """ Time between two flares (0 if their times overlap), and the difference of their heights at the
+                same time, between their closest points in time, with these points. """
+
+            gap = max(0.0, b[0]['t_rel'] - a[-1]['t_rel'], a[0]['t_rel'] - b[-1]['t_rel'])
+            pa, pb = min(((fa, fb) for fa in a for fb in b), key=lambda x: abs(x[1]['t_rel'] - x[0]['t_rel']))
+
+            # Height of b at the time of a, along the trajectory
+            dht = pb['ht'] - pa['ht'] - pa['ht_rate']*(pb['t_rel'] - pa['t_rel'])
+
+            return gap, dht, pa, pb
+
+        out_str += "\n"
+        out_str += "Flares of different stations compared, each one with the closest one in time of every other\n"
+        out_str += "station: the time between them (none if their times overlap; the time uncertainty includes a\n"
+        out_str += "frame of each camera) and the difference of their heights at the same time.\n"
+
+        compared = set()
+        for i, event in enumerate(events):
+            for station_id in stations:
+
+                if station_id == event[0]['station_id']:
+                    continue
+
+                others = [j for j, other in enumerate(events) if other[0]['station_id'] == station_id]
+                j = min(others, key=lambda j: (compare(event, events[j])[0], 
+                    abs(compare(event, events[j])[3]['t_rel'] - compare(event, events[j])[2]['t_rel'])))
+                gap, dht, pa, pb = compare(event, events[j])
+
+                if gap > match_window:
+                    out_str += "{:2d} {:s}: no flare of {:s} within {:.1f} s\n".format(i + 1, event[0]['station_id'], 
+                        station_id, match_window)
+                    continue
+
+                if (min(i, j), max(i, j)) in compared:
+                    continue
+                compared.add((min(i, j), max(i, j)))
+
+                line = "{:2d} {:s} - {:2d} {:s}: {:s}, heights {:+.3f} km apart".format(i + 1, 
+                    event[0]['station_id'], j + 1, station_id, 
+                    "times overlap" if gap == 0 else "{:.3f} s apart".format(gap), dht/1000)
+
+                if (pa['t_std'] is not None) and (pb['t_std'] is not None):
+
+                    t_sig = np.sqrt(pa['t_std']**2 + pb['t_std']**2 + (pa['frame_dt']**2 + pb['frame_dt']**2)/12)
+                    ht_sig = np.sqrt(pa['ht_std']**2 + pb['ht_std']**2 
+                        + (pa['ht_rate']**2)*(pa['t_std']**2 + pb['t_std']**2))
+
+                    consistent = (gap <= 3*t_sig) and (abs(dht) <= 3*ht_sig)
+                    line += " ({:.1f} and {:.1f} sigma): {:s}".format(gap/t_sig, abs(dht)/ht_sig, 
+                        "consistent" if consistent else "NOT consistent, different flares?")
+
+                out_str += line + "\n"
 
     return out_str
 
@@ -917,7 +1110,12 @@ if __name__ == "__main__":
     # Report the times and heights of the points flagged as flares, if any, also in the saved report
     if (traj is not None) and (cml_args.solver == 'original'):
 
-        flares = flareHeights(traj, ecsv_paths)
+        # On the solution with the original picks, which the saved report describes, with uncertainties from
+        #   the Monte Carlo runs
+        traj_path = os.path.join(traj.output_dir, traj.file_name + '_trajectory.pickle')
+        traj_orig = loadPickle(*os.path.split(traj_path)) if os.path.isfile(traj_path) else traj
+
+        flares = flareHeights(traj_orig, ecsv_paths, mc_trajs=getattr(traj, 'mc_traj_list', None))
         if flares:
 
             flare_report = flareReport(flares)
