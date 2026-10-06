@@ -398,6 +398,44 @@ def test_command_line_saves_the_nominal_solution_and_its_realizations(tmp_path, 
     assert np.all(rows[:, 13] == Constants().sigma*1e6)
 
 
+
+def test_command_line_runs_in_the_atmosphere_chosen_with_atm(tmp_path, monkeypatch):
+    """ --atm and --atmtime, shared with REBOUND's command line, choose the MSIS model the run back goes through,
+        which the output names: NRLMSIS 2.1 is less dense than NRLMSISE-00 here, so the meteoroid comes back
+        slower and with less mass grown back. """
+
+    from wmpl.Utils import AtmosphereDensity
+
+    # The choice is global to the module and kept in the environment, so restore both afterwards
+    monkeypatch.setattr(AtmosphereDensity, "MSIS_VERSION", AtmosphereDensity.MSIS_VERSION)
+    monkeypatch.setattr(AtmosphereDensity, "MSIS_JD", AtmosphereDensity.MSIS_JD)
+    for env in (AtmosphereDensity.MSIS_VERSION_ENV, AtmosphereDensity.MSIS_JD_ENV):
+        monkeypatch.setenv(env, "")
+        monkeypatch.delenv(env)
+
+    traj, _ = _exampleStart()
+    savePickle(traj, str(tmp_path), "traj.pickle")
+
+    rows, headers = {}, {}
+    for atm in ("00", "2.1"):
+        monkeypatch.setattr(sys, "argv", ["BackwardAtmIntegration", str(tmp_path/"traj.pickle"), "--mass", "1e-3",
+            "--atm", atm])
+        runpy.run_module("wmpl.MetSim.BackwardAtmIntegration", run_name="__main__")
+        rows[atm] = np.loadtxt(str(tmp_path/"traj_backward_atm.txt"))
+        with open(str(tmp_path/"traj_backward_atm.txt")) as f:
+            headers[atm] = f.readline()
+
+    assert "Atmosphere: NRLMSISE-00, at the trajectory's time" in headers["00"]
+    assert "Atmosphere: NRLMSIS 2.1, at the trajectory's time" in headers["2.1"]
+    assert rows["2.1"][5] != rows["00"][5] and rows["2.1"][6] != rows["00"][6]
+
+    monkeypatch.setattr(sys, "argv", ["BackwardAtmIntegration", str(tmp_path/"traj.pickle"), "--mass", "1e-3",
+        "--atm", "2.1", "--atmtime", "20200101-000000"])
+    runpy.run_module("wmpl.MetSim.BackwardAtmIntegration", run_name="__main__")
+    with open(str(tmp_path/"traj_backward_atm.txt")) as f:
+        assert "NRLMSIS 2.1, at 2020-01-01 00:00:00 UTC (--atmtime)" in f.readline()
+
+
 if __name__ == "__main__":
     test_state_at_the_start_is_the_solver_state()
     test_backward_run_ends_at_h_kill_on_the_radiant_line()
