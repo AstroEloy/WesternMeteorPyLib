@@ -172,7 +172,8 @@ class DragVelocityFit(object):
             drag_coeff: [float] B = Gamma A rho_m^(-2/3) m0^(-1/3) at t = 0 (m^2/kg).
             sigma: [float] Ablation coefficient (s^2/km^2).
             sigma_stddev: [float] Its formal 1-sigma uncertainty (s^2/km^2). Large when the ablation does not
-                change the deceleration enough to be measured, which is when it does not matter for v_init.
+                change the deceleration enough to be measured, which is when it does not matter for v_init, and
+                infinite when the fitted points show no deceleration at all (see decelerationNote()).
             time_offsets: [dict] Time offsets added to each station's times for this fit (s), by station ID, 0
                 for the stations in fixed_stations.
             rms: [float] RMS of the length residuals (m).
@@ -199,6 +200,9 @@ class DragVelocityFit(object):
 
         # Stations whose time offsets were kept instead of fitted, as they were given to the solver as fixed
         self.fixed_stations = []
+
+        # Whether the fitted points show no deceleration, B ending at its lower bound (see decelerationNote())
+        self.no_deceleration = False
 
         # Along the fitted model over the fitted points (see breakupNotes): the range of the dynamic pressure
         #   rho_air v^2 (Pa) and of the energy received per unit cross section from the top of the atmosphere
@@ -354,6 +358,29 @@ def _breakupProfile(fit, const, traj, v_rotation, n_top=200):
     crossed = np.nonzero(pressure >= FIRST_FRAGMENTATION_PRESSURE[0])[0]
     if len(crossed) and (crossed[0] > 0):
         fit.first_fragmentation_ht = float(heights[crossed[0]])
+
+
+def decelerationNote(fit):
+    """ Note that the fitted points show no deceleration, if so: B ended at the lower bound of the fit, which is
+        then a straight line over them, that the ablation coefficient does not change, so it is not constrained.
+        The velocity is then the slope of these points alone, which over a short part, or one seen mostly by one
+        station, can differ from the straight line over the first part.
+
+    Arguments:
+        fit: [DragVelocityFit]
+
+    Return:
+        [str] or None if the fit measured a deceleration.
+    """
+
+    if not getattr(fit, "no_deceleration", False):
+        return None
+
+    return ("The fitted points show no deceleration (B ended at the lower bound of the fit, {:.1e} m^2/kg), so the "
+        "fit is a straight line over them: the velocity is the slope of these {:d} points from {:d} station(s) "
+        "alone, and the ablation coefficient is not constrained. If the meteor decelerates further on, a longer fit "
+        "that is still free of fragmentation (--vinitdragtime) can measure it.").format(fit.drag_coeff,
+        fit.n_points, len(fit.time_offsets))
 
 
 def breakupNotes(fit):
@@ -518,13 +545,19 @@ def fitDragInitialVelocity(traj, ht_min=None, t_max=None, fine_dt=0.001, return_
     cov = np.linalg.pinv(best.jac.T.dot(best.jac))*np.sum(best.fun**2)/dof
     stddev = np.sqrt(np.abs(np.diag(cov)))
 
+    # With B at its lower bound the fitted points show no deceleration, and the ablation coefficient does not
+    #   change the model, so it is not constrained, although its formal uncertainty is then 0
+    no_deceleration = params[1] <= lb[1] + 1e-3
+    sigma_stddev = np.inf if no_deceleration else stddev[3]
+
     time_offsets = {obs.station_id: 0.0 for obs in observations}
     for k, i in enumerate(offset_stations):
         time_offsets[observations[i].station_id] = params[4 + k]
 
-    fit_result = DragVelocityFit(params[0], stddev[0], params[2], math.exp(params[1]), params[3], stddev[3],
+    fit_result = DragVelocityFit(params[0], stddev[0], params[2], math.exp(params[1]), params[3], sigma_stddev,
         time_offsets, rms, v_lin, rms_linear, len(times), (np.min(heights), np.max(heights)),
         (np.min(times), np.max(times)))
+    fit_result.no_deceleration = bool(no_deceleration)
     fit_result.fixed_stations = [str(obs.station_id) for obs in observations if str(obs.station_id) in kept]
 
     # Where the fitted part stands against typical fragmentation pressures and erosion onset energies

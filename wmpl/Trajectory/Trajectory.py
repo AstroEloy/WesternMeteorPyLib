@@ -47,7 +47,7 @@ except ImportError:
 
 import wmpl
 from wmpl.Trajectory.Orbit import calcOrbit
-from wmpl.Utils.DragInitialVelocity import LINE_BIAS_SIGMA, breakupNotes, estimateLineBias, \
+from wmpl.Utils.DragInitialVelocity import LINE_BIAS_SIGMA, breakupNotes, decelerationNote, estimateLineBias, \
     fitDragInitialVelocity, fittedTimeLimit
 from wmpl.Utils.Math import vectNorm, vectMag, meanAngle, findClosestPoints, RMSD, \
     angleBetweenSphericalCoords, angleBetweenVectors, lineFunc, normalizeAngleWrap, confidenceInterval
@@ -4500,8 +4500,9 @@ class Trajectory(object):
             out_str += "{:.2f} to {:.2f} km:\n".format(fit.ht_range[1]/1000, fit.ht_range[0]/1000)
             out_str += "  Vinit = {:.2f} +/- {:.2f} m/s (straight line over the first part: {:.2f} m/s)\n".format(
                 fit.v_init, fit.v_init_stddev, fit.v_init_linear)
-            out_str += "  sigma = {:.4f} +/- {:.4f} s^2/km^2, B = {:.4e} m^2/kg\n".format(fit.sigma, fit.sigma_stddev,
-                fit.drag_coeff)
+            sigma_str = "not constrained" if not np.isfinite(fit.sigma_stddev) else \
+                "{:.4f} +/- {:.4f} s^2/km^2".format(fit.sigma, fit.sigma_stddev)
+            out_str += "  sigma = {:s}, B = {:.4e} m^2/kg\n".format(sigma_str, fit.drag_coeff)
             out_str += "  RMS   = {:.2f} m (straight line: {:.2f} m)\n".format(fit.rms, fit.rms_linear)
             if getattr(fit, "fixed_stations", None):
                 out_str += "  Time offsets kept, not fitted again: {:s}\n".format(", ".join(fit.fixed_stations))
@@ -4511,8 +4512,9 @@ class Trajectory(object):
                 out_str += "  Dynamic pressure {:.4f} to {:.4f} MPa, energy received {:.3g} to {:.3g} MJ/m^2\n" \
                     .format(fit.dyn_pressure_range[0]/1e6, fit.dyn_pressure_range[1]/1e6, fit.energy_range[0]/1e6,
                     fit.energy_range[1]/1e6)
-            for note in breakupNotes(fit):
-                out_str += "  NOTE: " + note + "\n"
+            for note in [decelerationNote(fit)] + breakupNotes(fit):
+                if note is not None:
+                    out_str += "  NOTE: " + note + "\n"
             out_str += "\n"
 
         elif getattr(self, "v_init_drag", False):
@@ -6716,8 +6718,9 @@ class Trajectory(object):
                 self.jacchia_fit = self.fitJacchiaLag(self.observations)
 
                 if self.verbose:
-                    for note in breakupNotes(self.v_init_drag_fit):
-                        print("NOTE: " + note)
+                    for note in [decelerationNote(self.v_init_drag_fit)] + breakupNotes(self.v_init_drag_fit):
+                        if note is not None:
+                            print("NOTE: " + note)
 
             elif self.verbose:
                 print(self._dragFitRejectedText())
