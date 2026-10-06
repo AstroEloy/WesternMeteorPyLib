@@ -443,8 +443,8 @@ def fragmentComparison(traj, fragment_trajs, reuse_timing=True):
         return "{:d} / {:d}".format(len(t.observations), sum(len(obs.time_data) for obs in t.observations))
 
     out_str = "\n"
-    out_str += "Additional fragments compared with the main fragment\n"
-    out_str += "----------------------------------------------------\n"
+    out_str += "Additional fragments compared with the main fragment (fragment 0)\n"
+    out_str += "-----------------------------------------------------------------\n"
     out_str += "Time offsets of the stations: {:s}\n".format("those of the main trajectory" if reuse_timing \
         else "estimated for every fragment")
     if traj.uncertainties is None:

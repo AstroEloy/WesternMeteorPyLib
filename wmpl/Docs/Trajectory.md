@@ -48,8 +48,8 @@ python -m wmpl.Trajectory.Trajectory
 ECSV files can describe more fragments than the main one, as in Appendix 4 of the GFE standard: one row
 per frame, with the columns of each additional fragment carrying its number as a suffix (`datetime1`,
 `ra1`, `dec1`, `azimuth1`, `altitude1`, ...), empty on the frames where it was not measured. The main
-fragment is always solved from the columns without a suffix, leaving out its points with
-`trajectory_use` = False (e.g. saturated flares kept in the file).
+fragment, fragment 0, is always solved from the columns without a suffix (or with the optional suffix 0),
+leaving out its points with `trajectory_use` = False (e.g. saturated flares kept in the file).
 
 ```
 python -m wmpl.Formats.ECSV /path/to/event/*.ecsv --fragments
