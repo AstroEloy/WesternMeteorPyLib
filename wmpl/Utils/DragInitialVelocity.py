@@ -131,8 +131,8 @@ import numpy as np
 import scipy.optimize
 
 from wmpl.MetSim.BackwardAtmIntegration import backwardConstants
-from wmpl.MetSim.MetSimErosion import runSimulation
-from wmpl.Utils.AtmosphereDensity import atmDensPoly, fitAtmPoly, getAtmDensity
+from wmpl.MetSim.MetSimErosion import atmDensity, runSimulation
+from wmpl.Utils.AtmosphereDensity import fitAtmPoly, getAtmDensity, getAtmDensityTable
 from wmpl.Utils.TrajConversions import jd2Date
 
 
@@ -343,7 +343,7 @@ def _breakupProfile(fit, const, traj, v_rotation, n_top=200):
         v_rotation, profile=True)
     inside = (times >= t_lo) & (times <= t_hi)
     times, heights, speeds = times[inside], heights[inside], speeds[inside]
-    rho = np.array([atmDensPoly(h, const.dens_co) for h in heights])
+    rho = np.array([atmDensity(h, const) for h in heights])
     pressure = rho*speeds**2
 
     # Received above the first point, then along the fitted model
@@ -465,6 +465,11 @@ def fitDragInitialVelocity(traj, ht_min=None, t_max=None, fine_dt=0.001, return_
     const = backwardConstants(traj.jdt_ref, np.concatenate([traj.state_vect_mini, traj.v_init*traj.radiant_eci_mini]),
         1.0, h_kill=ht_hi)
     const.dens_co = fitAtmPoly(traj.rbeg_lat, traj.rbeg_lon, ht_lo, ht_hi, traj.jdt_ref)
+
+    # The tabulated density over the same heights, which MetSim uses instead of the polynomial. It replaces the 
+    #   one from backwardConstants(), which only starts at the reference point
+    const.atm_table_ht, const.atm_table_log10_rho = getAtmDensityTable(traj.rbeg_lat, traj.rbeg_lon, ht_lo, ht_hi,
+        traj.jdt_ref)
     const.v_kill = 100.0
     v_rotation = traj.v_init - const.v_init
 
