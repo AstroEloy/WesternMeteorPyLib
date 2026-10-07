@@ -5,7 +5,7 @@ import scipy.optimize
 import matplotlib.pyplot as plt
 from matplotlib.pyplot import cm
 
-from wmpl.Utils.AtmosphereDensity import fitAtmPoly, addAtmosphereArguments, setAtmosphere
+from wmpl.Utils.AtmosphereDensity import fitAtmPoly, getAtmDensityTable, addAtmosphereArguments, setAtmosphere
 from wmpl.Utils.Math import lineFunc, vectMag
 from wmpl.Utils.TrajConversions import cartesian2Geo, derotatedRadiantAltAz
 from wmpl.Utils.Physics import dynamicMass
@@ -64,6 +64,10 @@ def runFragSim(mass, density, lat, lon, jd, ht_beg, v_init, entry_angle, gamma_a
     #   fitAtmPoly() takes it in radians. The simulation only descends from its starting height, and a 7th order
     #   polynomial fitted up to 180 km misses the stratosphere by 10-30%, so it is fitted over those heights only
     const.dens_co = fitAtmPoly(np.radians(lat), np.radians(lon), const.h_kill, ht_beg, jd)
+
+    # Tabulate the density over the same heights, the simulation uses the table instead of the polynomial
+    const.atm_table_ht, const.atm_table_log10_rho = getAtmDensityTable(np.radians(lat), np.radians(lon), 
+        const.h_kill, ht_beg, jd)
 
     # Run the simulation
     frag_main, results_list, wake_results = runSimulation(const)

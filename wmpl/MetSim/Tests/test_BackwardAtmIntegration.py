@@ -19,7 +19,7 @@ from wmpl.MetSim.BackwardAtmIntegration import addBackwardArguments, backwardCon
 from wmpl.MetSim.MetSimErosion import Constants, Fragment, runSimulation
 from wmpl.Rebound.REBOUND import sampleStateVectors
 from wmpl.Utils.Pickling import loadPickle, savePickle
-from wmpl.Utils.AtmosphereDensity import fitAtmPoly
+from wmpl.Utils.AtmosphereDensity import fitAtmPoly, getAtmDensityTable
 from wmpl.Utils.TrajConversions import altAz2RADec, cartesian2Geo, geo2Cartesian, raDec2ECI
 
 
@@ -212,6 +212,7 @@ def test_erosion_of_the_body_is_undone_by_running_back_with_sigma_plus_eta():
 
     const = backwardConstants(jd, state_top, 1.0, h_kill=95e3)
     const.dens_co = fitAtmPoly(lat, lon, 40e3, 95e3, jd)
+    const.atm_table_ht, const.atm_table_log10_rho = getAtmDensityTable(lat, lon, 40e3, 95e3, jd)
     const.dt, const.h_kill, const.t_kill, const.v_kill = 0.0005, 20e3, 1.3, 100.0
     const.erosion_on, const.erosion_height_start, const.erosion_coeff = True, 95e3, 0.3e-6
     const.erosion_height_change, const.erosion_mass_min, const.erosion_mass_max = -1.0, 1e-4, 1e-3
@@ -224,6 +225,7 @@ def test_erosion_of_the_body_is_undone_by_running_back_with_sigma_plus_eta():
         const_back.sigma, const_back.rho, const_back.dt = sigma, const.rho, -0.0005
         cb = backwardConstants(jd_end, state_end, frag.m, h_kill=95e3, const=const_back)
         cb.dens_co, cb.t_kill = const.dens_co, t
+        cb.atm_table_ht, cb.atm_table_log10_rho = const.atm_table_ht, const.atm_table_log10_rho
         frag_back, results_back, _ = runSimulation(cb)
         return frag_back.m, np.linalg.norm(backwardState(jd_end, state_end, frag_back, results_back[-1][0])[1][3:])
 
