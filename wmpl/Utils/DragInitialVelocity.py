@@ -119,10 +119,10 @@ m^2/kg, sigma from 0.005 to 0.05 s^2/km^2, first seen at 50 and 70 km, observed 
 and 40% of their speed, with NRLMSISE-00 as the atmosphere) the velocity error over its formal uncertainty had an
 RMS of 1.02 and stayed within 2.7. The fitted velocity depends on the shape of the density profile with height,
 not on its scale, which B absorbs: in those cases a density 6% higher at 40 km than NRLMSISE-00, growing linearly
-from 60 km, moved the velocity by up to 42 m/s, beyond 3 times its uncertainty in 6 of them. The polynomial MetSim
-takes, fitted over the observed heights, was within 2.3% of NRLMSISE-00. The fit also inherits the errors of the
-solver's lengths: through the solver, the synthetic fireballs of the tests come out 19-56 m/s high fitting all
-their points, within 2.3 times their uncertainty.
+from 60 km, moved the velocity by up to 42 m/s, beyond 3 times its uncertainty in 6 of them. MetSim takes the density
+tabulated over the observed heights, within 0.5% of the MSIS model (the 6th degree polynomial it took before was
+within 2.3% of NRLMSISE-00). The fit also inherits the errors of the solver's lengths: through the solver, the
+synthetic fireballs of the tests come out 19-56 m/s high fitting all their points, within 2.3 times their uncertainty.
 """
 
 import math
@@ -334,8 +334,8 @@ def _breakupProfile(fit, const, traj, v_rotation, n_top=200):
     """ Fill the dynamic pressure and received energy ranges of a fit (see DragVelocityFit) from its model.
 
     The energy received per unit cross section above the first fitted point, E = int rho v^3/2 dt, is taken with
-    the speed there along a straight path through NRLMSISE-00 up to 180 km, rho v^2/2/cos(z) per unit height; the
-    deceleration above the first point makes it slightly low.
+    the speed there along a straight path through the MSIS model up to 180 km, rho v^2/2/cos(z) per unit height;
+    the deceleration above the first point makes it slightly low.
     """
 
     t_lo, t_hi = fit.t_range
