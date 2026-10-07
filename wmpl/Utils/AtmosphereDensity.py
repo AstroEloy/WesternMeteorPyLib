@@ -107,7 +107,7 @@ def atmDensPoly(ht, dens_co):
     """ Compute the atmosphere density using a 6th degree polynomial (7 coefficients) in log10 of the density.
         This is used in the ablation simulation for faster execution. 
 
-        Note that the polynomial deviates from NRLMSISE-00 by up to tens of percent at 80 - 120 km when it is
+        Note that the polynomial deviates from the MSIS model by up to tens of percent at 80 - 120 km when it is
         fitted over a wide height range (e.g. 14 - 180 km for fireballs), use the tabulated profile from
         getAtmDensityTable() instead when accuracy matters.
 
@@ -177,10 +177,11 @@ def fitAtmPoly(lat, lon, height_min, height_max, jd):
 
 
 def getAtmDensityTable(lat, lon, height_min, height_max, jd, step=500):
-    """ Tabulate the log10 of the NRLMSISE-00 atmosphere mass density at the given location and time on a 
-        uniform height grid. The ablation simulation interpolates log10(density) linearly between the table 
-        points (see atmDensTable), which with the default 500 m step reproduces NRLMSISE-00 to better than 
-        0.5% in density and 0.02% in the air column above any height, between 0 and 180 km.
+    """ Tabulate the log10 of the atmosphere mass density of the MSIS model (as given by getAtmDensity) at the
+        given location and time on a uniform height grid. The ablation simulation interpolates log10(density) 
+        linearly between the table points (see atmDensTable), which with the default 500 m step reproduces the 
+        model to better than 0.5% in density and 0.02% in the air column above any height, between 0 and 
+        180 km (measured for NRLMSISE-00 and NRLMSIS 2.0 and 2.1).
 
     Arguments:
         lat: [float] Latitude in radians.
@@ -207,7 +208,7 @@ def getAtmDensityTable(lat, lon, height_min, height_max, jd, step=500):
     n_points = int(np.ceil((height_max - height_min)/step)) + 1
     table_ht = np.linspace(height_min, height_max, n_points)
 
-    # Get atmosphere densities from NRLMSISE-00
+    # Get atmosphere densities from the MSIS model
     table_log10_rho = np.log10([getAtmDensity(lat, lon, ht, jd) for ht in table_ht])
 
     # Return plain lists of floats, which are JSON serializable and fast to index in the simulation

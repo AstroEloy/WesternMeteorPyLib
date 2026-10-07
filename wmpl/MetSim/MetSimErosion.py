@@ -92,7 +92,7 @@ class Constants(object):
         # Tabulated atmosphere density profile - heights (m, ascending) and log10 of the density (kg/m^3), 
         #   interpolated linearly in log10 between the points (see 
         #   wmpl.Utils.AtmosphereDensity.getAtmDensityTable). If given, it is used instead of dens_co, as it
-        #   follows NRLMSISE-00 much more closely than the polynomial.
+        #   follows the MSIS model much more closely than the polynomial.
         self.atm_table_ht = None
         self.atm_table_log10_rho = None
         
@@ -1813,7 +1813,7 @@ if __name__ == "__main__":
         )
 
     # Tabulate the atmosphere density for the same location, time and heights - the simulation uses the table
-    #   instead of the polynomial when it is given, as it follows NRLMSISE-00 much more closely
+    #   instead of the polynomial when it is given, as it follows the MSIS model much more closely
     const.atm_table_ht, const.atm_table_log10_rho = getAtmDensityTable(np.radians(45.3), np.radians(18.1), 
         70000, 180000, date2JD(2020, 4, 20, 16, 15, 0))
 

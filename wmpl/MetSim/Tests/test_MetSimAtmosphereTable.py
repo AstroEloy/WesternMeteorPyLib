@@ -1,13 +1,13 @@
 """ Tests for the tabulated atmosphere density profile used by MetSimErosion.
 
 The ablation simulation used to take the air density only from a 6th degree polynomial fitted to log10 of
-the NRLMSISE-00 density (fitAtmPoly). Over the wide height ranges used for fireballs (e.g. 14 - 180 km) the
-polynomial misses NRLMSISE-00 by tens of percent at 80 - 120 km. The density can now be given as a table of
+the MSIS density (fitAtmPoly). Over the wide height ranges used for fireballs (e.g. 14 - 180 km) the
+polynomial misses the model by tens of percent at 80 - 120 km. The density can now be given as a table of
 log10(density), interpolated linearly in height (getAtmDensityTable), which the simulation uses instead of
 the polynomial when it is present. These tests check:
 
     - the table grid and its values at the nodes
-    - the table follows NRLMSISE-00 between the nodes, far closer than the polynomial
+    - the table follows the MSIS model between the nodes, far closer than the polynomial
     - the scalar engine interpolation and the vectorized utility agree, also outside the table
     - the exact air column of the table matches the numerical integral (used by the Pecina-Ceplecha fit)
     - the simulation actually uses the table, and falls back to the polynomial without one (incl. Constants
@@ -83,7 +83,7 @@ def _runMain(const):
 
 def test_table_grid():
     """ The table spans the requested range in equal steps no larger than requested, holds plain floats,
-    and stores log10 of the NRLMSISE-00 density at the nodes. """
+    and stores log10 of the MSIS density at the nodes. """
 
     assert TABLE_HT[0] == HT_MIN
     assert TABLE_HT[-1] == HT_MAX
@@ -108,19 +108,19 @@ def test_table_grid():
         pass
 
 
-def test_table_follows_msise():
-    """ Between the nodes the table stays within 0.5% of NRLMSISE-00 over the whole fireball range, while the
+def test_table_follows_msis():
+    """ Between the nodes the table stays within 0.5% of the MSIS model over the whole fireball range, while the
     polynomial fitted to the same range misses it by more than 10% somewhere at 80 - 120 km. """
 
     # Node midpoints are the worst case of the interpolation
     ht = 0.5*(np.array(TABLE_HT[:-1]) + np.array(TABLE_HT[1:]))
-    rho_msise = np.array([getAtmDensity(LAT, LON, h, JD) for h in ht])
+    rho_msis = np.array([getAtmDensity(LAT, LON, h, JD) for h in ht])
 
-    err_table = np.abs(atmDensTable(ht, TABLE_HT, TABLE_LOG10_RHO)/rho_msise - 1)
+    err_table = np.abs(atmDensTable(ht, TABLE_HT, TABLE_LOG10_RHO)/rho_msis - 1)
     assert err_table.max() < 0.005, err_table.max()
 
     meteor_band = (ht > 80000) & (ht < 120000)
-    err_poly = np.abs(atmDensPoly(ht, DENS_CO)/rho_msise - 1)
+    err_poly = np.abs(atmDensPoly(ht, DENS_CO)/rho_msis - 1)
     assert err_poly[meteor_band].max() > 0.10, err_poly[meteor_band].max()
 
 
@@ -184,7 +184,7 @@ def test_table_column_exact():
 
 
 def test_simulation_uses_table():
-    """ A table sampled from the polynomial itself reproduces the polynomial run, and the NRLMSISE-00 table
+    """ A table sampled from the polynomial itself reproduces the polynomial run, and the MSIS table
     changes the run - so the simulation reads the table, not dens_co. """
 
     t_poly, ht_poly, vel_poly, lum_poly = _runMain(_makeConstants())
@@ -199,10 +199,10 @@ def test_simulation_uses_table():
     assert np.allclose(vel_tp, vel_poly, rtol=1e-5)
     assert np.allclose(lum_tp, lum_poly, rtol=1e-3, atol=1e-6*np.max(lum_poly))
 
-    # The NRLMSISE-00 table is a different atmosphere, so the light curve must change
-    _, _, _, lum_msise = _runMain(_makeConstants((TABLE_HT, TABLE_LOG10_RHO)))
-    n = min(len(lum_msise), len(lum_poly))
-    assert np.max(np.abs(lum_msise[:n] - lum_poly[:n])) > 0.01*np.max(lum_poly)
+    # The MSIS table is a different atmosphere, so the light curve must change
+    _, _, _, lum_msis = _runMain(_makeConstants((TABLE_HT, TABLE_LOG10_RHO)))
+    n = min(len(lum_msis), len(lum_poly))
+    assert np.max(np.abs(lum_msis[:n] - lum_poly[:n])) > 0.01*np.max(lum_poly)
 
 
 def test_constants_without_table_attribute():
