@@ -119,10 +119,10 @@ m^2/kg, sigma from 0.005 to 0.05 s^2/km^2, first seen at 50 and 70 km, observed 
 and 40% of their speed, with NRLMSISE-00 as the atmosphere) the velocity error over its formal uncertainty had an
 RMS of 1.02 and stayed within 2.7. The fitted velocity depends on the shape of the density profile with height,
 not on its scale, which B absorbs: in those cases a density 6% higher at 40 km than NRLMSISE-00, growing linearly
-from 60 km, moved the velocity by up to 42 m/s, beyond 3 times its uncertainty in 6 of them. The polynomial MetSim
-takes, fitted over the observed heights, was within 2.3% of NRLMSISE-00. The fit also inherits the errors of the
-solver's lengths: through the solver, the synthetic fireballs of the tests come out 19-56 m/s high fitting all
-their points, within 2.3 times their uncertainty.
+from 60 km, moved the velocity by up to 42 m/s, beyond 3 times its uncertainty in 6 of them. MetSim takes the density
+tabulated over the observed heights, within 0.5% of the MSIS model (the 6th degree polynomial it took before was
+within 2.3% of NRLMSISE-00). The fit also inherits the errors of the solver's lengths: through the solver, the
+synthetic fireballs of the tests come out 19-56 m/s high fitting all their points, within 2.3 times their uncertainty.
 """
 
 import math
@@ -131,8 +131,8 @@ import numpy as np
 import scipy.optimize
 
 from wmpl.MetSim.BackwardAtmIntegration import backwardConstants
-from wmpl.MetSim.MetSimErosion import runSimulation
-from wmpl.Utils.AtmosphereDensity import atmDensPoly, fitAtmPoly, getAtmDensity
+from wmpl.MetSim.MetSimErosion import atmDensity, runSimulation
+from wmpl.Utils.AtmosphereDensity import fitAtmPoly, getAtmDensity, getAtmDensityTable
 from wmpl.Utils.TrajConversions import jd2Date
 
 
@@ -334,8 +334,8 @@ def _breakupProfile(fit, const, traj, v_rotation, n_top=200):
     """ Fill the dynamic pressure and received energy ranges of a fit (see DragVelocityFit) from its model.
 
     The energy received per unit cross section above the first fitted point, E = int rho v^3/2 dt, is taken with
-    the speed there along a straight path through NRLMSISE-00 up to 180 km, rho v^2/2/cos(z) per unit height; the
-    deceleration above the first point makes it slightly low.
+    the speed there along a straight path through the MSIS model up to 180 km, rho v^2/2/cos(z) per unit height;
+    the deceleration above the first point makes it slightly low.
     """
 
     t_lo, t_hi = fit.t_range
@@ -343,7 +343,7 @@ def _breakupProfile(fit, const, traj, v_rotation, n_top=200):
         v_rotation, profile=True)
     inside = (times >= t_lo) & (times <= t_hi)
     times, heights, speeds = times[inside], heights[inside], speeds[inside]
-    rho = np.array([atmDensPoly(h, const.dens_co) for h in heights])
+    rho = np.array([atmDensity(h, const) for h in heights])
     pressure = rho*speeds**2
 
     # Received above the first point, then along the fitted model
@@ -465,6 +465,11 @@ def fitDragInitialVelocity(traj, ht_min=None, t_max=None, fine_dt=0.001, return_
     const = backwardConstants(traj.jdt_ref, np.concatenate([traj.state_vect_mini, traj.v_init*traj.radiant_eci_mini]),
         1.0, h_kill=ht_hi)
     const.dens_co = fitAtmPoly(traj.rbeg_lat, traj.rbeg_lon, ht_lo, ht_hi, traj.jdt_ref)
+
+    # The tabulated density over the same heights, which MetSim uses instead of the polynomial. It replaces the 
+    #   one from backwardConstants(), which only starts at the reference point
+    const.atm_table_ht, const.atm_table_log10_rho = getAtmDensityTable(traj.rbeg_lat, traj.rbeg_lon, ht_lo, ht_hi,
+        traj.jdt_ref)
     const.v_kill = 100.0
     v_rotation = traj.v_init - const.v_init
 

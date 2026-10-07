@@ -19,7 +19,7 @@ from types import SimpleNamespace
 import numpy as np
 
 from wmpl.Trajectory.Trajectory import Trajectory
-from wmpl.Utils.AtmosphereDensity import atmDensPoly, fitAtmPoly
+from wmpl.Utils.AtmosphereDensity import AtmDensityTableInterp, getAtmDensityTable
 from wmpl.Utils.DragInitialVelocity import atmosphereDescription, breakupNotes, fitDragInitialVelocity, \
     fittedTimeLimit
 from wmpl.Utils.Pickling import loadPickle
@@ -53,11 +53,11 @@ def _trueLength(v0, drag_coeff, sigma, h0, zenith, duration, frag_ht=None, frag_
     heights = np.array([cartesian2Geo(JD0, *(p0 + motion*l))[2] for l in lengths])
     cos_z = -np.gradient(heights, lengths)
 
-    def deriv(y, dens_co):
+    def deriv(y, air_density):
         l, v, log_m = y
         ht = np.interp(l, lengths, heights)
         u = v - v_air
-        drag = drag_coeff*math.exp(-log_m/3)*atmDensPoly(ht, dens_co)*u**2
+        drag = drag_coeff*math.exp(-log_m/3)*air_density(ht)*u**2
         return np.array([v, -drag + 9.81*(6371008.7714/(6371008.7714 + ht))**2*np.interp(l, lengths, cos_z),
             -sigma*u*drag])
 
@@ -65,15 +65,16 @@ def _trueLength(v0, drag_coeff, sigma, h0, zenith, duration, frag_ht=None, frag_
     reached = lengths
     for _ in range(2):
         ht_reached = np.interp(reached, lengths, heights)
-        dens_co = fitAtmPoly(LAT0, LON0, np.min(ht_reached) - 5000, np.max(ht_reached) + 5000, JD0)
+        air_density = AtmDensityTableInterp(*getAtmDensityTable(LAT0, LON0, np.min(ht_reached) - 5000, 
+            np.max(ht_reached) + 5000, JD0))
         dt = 0.001
         y = np.array([0.0, v0, 0.0])
         l_arr = [0.0]
         for _ in range(int(round(duration/dt))):
-            k1 = deriv(y, dens_co)
-            k2 = deriv(y + k1*dt/2, dens_co)
-            k3 = deriv(y + k2*dt/2, dens_co)
-            k4 = deriv(y + k3*dt, dens_co)
+            k1 = deriv(y, air_density)
+            k2 = deriv(y + k1*dt/2, air_density)
+            k3 = deriv(y + k2*dt/2, air_density)
+            k4 = deriv(y + k3*dt, air_density)
             y = y + dt*(k1 + 2*k2 + 2*k3 + k4)/6
             if (frag_ht is not None) and (np.interp(l_arr[-1], lengths, heights) >= frag_ht) \
                     and (np.interp(y[0], lengths, heights) < frag_ht):
