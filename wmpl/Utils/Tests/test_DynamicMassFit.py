@@ -213,6 +213,28 @@ def testFragmentSimulationFitsTheAtmosphereAtTheGivenLocation(traj):
     assert sr.const.dens_co == pytest.approx(dens_co, rel=1e-12)
 
 
+def testFragmentSimulationFollowsTheDensityOfTheAtmosphereProfile(traj, tmp_path):
+    """ The simulation takes the air density from the atmosphere profile when it is given one, not from the MSIS
+        model: in a profile twice as dense as an exponential atmosphere the same body is stopped much sooner than in
+        MSIS. A simulation that ignored the profile's density, e.g. by replacing it with a tabulated MSIS density,
+        would end when the one without a profile does.
+    """
+
+    path = str(tmp_path/"dense.csv")
+    with open(path, 'w') as f:
+        f.write("height,temperature,pressure,relative_humidity,wind_horizontal,wind_direction,wind_east,"
+            "wind_north,wind_up,density\n")
+        for ht in np.arange(0.0, 60100.0, 100.0):
+            f.write("{:.1f},250,1000,1,0,270,0,0,0,{:.10e}\n".format(ht, 2.6*np.exp(-ht/6900.0)))
+
+    args = (0.1, 3500, np.degrees(traj.rend_lat), np.degrees(traj.rend_lon), traj.jdt_ref, 30000, 5000, 45, 0.55)
+    with contextlib.redirect_stdout(io.StringIO()):
+        msis = runFragSim(*args)
+        dense = runFragSim(*args, atm_profile=AtmosphereProfile(path))
+
+    assert dense.time_arr[-1] < 0.8*msis.time_arr[-1]
+
+
 def testFragmentSimulationUsesTheAtmosphereProfile(traj, tmp_path):
     """ With an atmosphere profile, the simulation's density polynomial is the profile's own fit over the
         heights the simulation descends through.
