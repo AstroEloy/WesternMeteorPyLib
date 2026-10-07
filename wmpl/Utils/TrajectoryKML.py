@@ -434,6 +434,7 @@ def trajectoryToKML(traj, output_kml_path):
     llh = lambda lat, lon, h: (deg(lon), deg(lat), h)
 
     kml = simplekml.Kml(name=traj.file_name)
+    f_plane = kml.newfolder(name="1. Vertical Plane")
     f_pts, f_rays, f_res, f_stat = [kml.newfolder(name=n) for n in ("2. Projected Points",
         "3. Lines of Sight", "4. Residuals", "5. Stations")]
 
@@ -462,12 +463,12 @@ def trajectoryToKML(traj, output_kml_path):
             vel = "{:.3f} km/s".format(obs.velocities[k]/1000) if obs.velocities is not None else "N/A"
 
             # Projected point on the trajectory
-            p = fp.newpoint(name="{} #{}".format(sid, k), coords=[llh(*tp)])
+            p = fp.newpoint(coords=[llh(*tp)])
             p.altitudemode = simplekml.AltitudeMode.absolute
             p.style.iconstyle.color = col
             p.style.iconstyle.scale = 0.4
             p.style.iconstyle.icon.href = WEB_ICON + "id=304&scale=4"  # round marker, tinted by its colour
-            p.style.labelstyle.scale = 0  # label hidden, the name still shows in the balloon
+            p.style.labelstyle.scale = 0  # points are unnamed so Google Earth Web shows no label
             p.description = ("Station {}, frame {}<br>t = {:.4f} s<br>Alt = {:.3f} km<br>"
                 "Distance = {:.3f} km<br>v = {}<br>Lat {:.5f}, Lon {:.5f}").format(sid, k, obs.time_data[k], 
                 tp[2]/1000, obs.length[k]/1000, vel, deg(tp[0]), deg(tp[1]))
@@ -490,8 +491,7 @@ def trajectoryToKML(traj, output_kml_path):
             r.style.linestyle.color = col
             r.style.linestyle.width = 2
 
-    # Vertical plane, added last: Google Earth then shows what is behind it
-    f_plane = kml.newfolder(name="1. Vertical Plane")
+    # Vertical plane
     # It spans the first and last observed points and their projection to 0 m
     b, e = (traj.rbeg_lat, traj.rbeg_lon, traj.rbeg_ele), (traj.rend_lat, traj.rend_lon, traj.rend_ele)
     # An extruded line (not a polygon) lets Google Earth show what is behind the curtain
