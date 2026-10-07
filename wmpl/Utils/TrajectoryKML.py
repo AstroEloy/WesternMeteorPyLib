@@ -411,6 +411,10 @@ def _kmlColor(rgb, alpha=255):
 # Icons that Google Earth Web renders with their colour
 WEB_ICON = "https://earth.google.com/earth/document/icon?"
 
+# Above this many frames the KML may not load in Google Earth Web (tested: ~1000 frames, 4.5 MB, loads;
+#   ~2000 frames, 9 MB, fails; Google Earth Pro handled 7800 frames, 36 MB)
+MAX_FRAMES_WEB = 1000
+
 # Number of dashes in each residual line
 N_DASHES = 6
 
@@ -504,6 +508,11 @@ def trajectoryToKML(traj, output_kml_path):
     wall.style.polystyle.color = simplekml.Color.changealphaint(127, "ff00aaff")
 
     kml.save(output_kml_path)
+
+    n_frames = sum(int(np.sum(obs.ignore_list == 0)) for obs in traj.observations)
+    if n_frames > MAX_FRAMES_WEB:
+        print("WARNING: the KML has {:d} frames (3 elements each); it may not load in Google Earth Web "
+            "(limit of 10,000 map elements and file size), but should open in Google Earth Pro.".format(n_frames))
 
     return output_kml_path
 
