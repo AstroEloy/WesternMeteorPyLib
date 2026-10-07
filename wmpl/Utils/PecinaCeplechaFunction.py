@@ -309,8 +309,8 @@ def fitPecinaCeplecha84Model(lat, lon, jd, time_data, ht_data, len_data, dens_in
 
     ### FIT THE AIR DENSITY MODEL ###
 
-    # Tabulate the air mass density from NRL-MSISE from the ceiling height to 3 km below the fireball - limit 
-    #   the height to 12 km
+    # Tabulate the air mass density of the MSIS model from the ceiling height to 3 km below the fireball - 
+    #   limit the height to 12 km
     ht_min = np.min(ht_data) - 3
     if ht_min < 12:
         ht_min = 12
@@ -736,8 +736,8 @@ if __name__ == "__main__":
 
     ### FIT THE AIR DENSITY MODEL ###
 
-    # Tabulate the air mass density from NRL-MSISE from the ceiling height to 3 km below the fireball - limit 
-    #   the height to 12 km
+    # Tabulate the air mass density of the MSIS model from the ceiling height to 3 km below the fireball - 
+    #   limit the height to 12 km
     ht_min = np.min(ht_data) - 3
     if ht_min < 12:
         ht_min = 12
