@@ -24,7 +24,7 @@ import scipy.optimize
 import matplotlib.pyplot as plt
 from matplotlib.pyplot import cm
 
-from wmpl.Utils.AtmosphereDensity import fitAtmPoly, addAtmosphereArguments, setAtmosphere
+from wmpl.Utils.AtmosphereDensity import fitAtmPoly, getAtmDensityTable, addAtmosphereArguments, setAtmosphere
 from wmpl.Utils.Math import lineFunc, vectMag, rotateVector
 from wmpl.Utils.TrajConversions import cartesian2Geo, derotatedRadiantAltAz, jd2LST, enu2ECEF, ecef2ENU
 from wmpl.Utils.Physics import dynamicMass
@@ -307,7 +307,13 @@ def runFragSim(mass, density, lat, lon, jd, ht_beg, v_init, entry_angle, gamma_a
         # The location is given in degrees, while fitAtmPoly() takes it in radians
         const.dens_co = fitAtmPoly(np.radians(lat), np.radians(lon), const.h_kill, ht_beg, jd)
 
+        # Tabulate the density over the same heights, the simulation uses the table instead of the polynomial
+        const.atm_table_ht, const.atm_table_log10_rho = getAtmDensityTable(np.radians(lat), np.radians(lon), 
+            const.h_kill, ht_beg, jd)
+
     else:
+
+        # The profile's own polynomial drives the simulation: the MSIS table must not replace its density
         const.dens_co, _ = atm_profile.fitPoly(const.h_kill, ht_beg)
 
         # MetSim uses the profile's winds at each height

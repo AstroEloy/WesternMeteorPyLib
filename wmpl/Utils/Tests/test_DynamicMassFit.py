@@ -32,7 +32,7 @@ from wmpl.Utils.DynamicMassFit import pointOnTrajectory, _robust_linear_fit, fit
     runMonteCarloDynMass, setAtmosphere
 from wmpl.Utils.AtmosphereProfile import AtmosphereProfile
 from wmpl.Utils.Physics import dynamicMass
-from wmpl.Utils.AtmosphereDensity import fitAtmPoly, atmDensPoly, getAtmDensity
+from wmpl.Utils.AtmosphereDensity import fitAtmPoly, atmDensPoly, atmDensTable, getAtmDensity
 from wmpl.Utils.Math import lineFunc, vectMag
 
 
@@ -234,6 +234,16 @@ def testFragmentSimulationUsesTheAtmosphereProfile(traj, tmp_path):
 
     assert sr.const.dens_co == pytest.approx(prof.fitPoly(SIM_HT_MIN, 30000)[0], rel=1e-12)
 
+    # The MSIS density table, which the simulation takes over the polynomial, would replace the profile's density
+    assert sr.const.atm_table_ht is None
+    assert atmDensPoly(20000.0, sr.const.dens_co) == pytest.approx(prof.density(20000.0), rel=1e-3)
+
+    # Without a profile the simulation does use the table
+    with contextlib.redirect_stdout(io.StringIO()):
+        sr_msis = runFragSim(0.1, 3500, np.degrees(traj.rend_lat), np.degrees(traj.rend_lon), traj.jdt_ref, 30000, \
+            5000, 45, 0.55)
+    assert sr_msis.const.atm_table_ht is not None
+
 
 def testEndDecelerationOfASingleStepSimulationIsNaN(traj):
     """ A simulation that starts less than one step above the kill speed takes a single step, which has no
@@ -371,7 +381,8 @@ def _inertialRun(traj, sr, height, vel, dt=2e-3):
         down = centre(t) - r
         h = np.linalg.norm(down) - const.r_earth
         u = v - np.cross(omega, r)
-        rho = atmDensPoly(h, const.dens_co)
+        rho = atmDensPoly(h, const.dens_co) if const.atm_table_ht is None \
+            else atmDensTable(h, const.atm_table_ht, const.atm_table_log10_rho)
         acc = -K*m**(-1/3.0)*rho*np.linalg.norm(u)*u \
             + MetSimErosion.G0*(const.r_earth/(const.r_earth + h))**2*down/np.linalg.norm(down) \
             + np.cross(omega, np.cross(omega, r))
@@ -494,6 +505,10 @@ def testFragmentSimulationAtmosphereFollowsMSISOverTheSimulatedHeights(traj):
     msis = np.array([getAtmDensity(traj.rend_lat, traj.rend_lon, ht, traj.jdt_ref) for ht in heights])
 
     assert atmDensPoly(heights, sr.const.dens_co) == pytest.approx(msis, rel=0.01)
+
+    # The table the simulation actually uses follows MSIS more closely still
+    assert atmDensTable(heights, sr.const.atm_table_ht, sr.const.atm_table_log10_rho) == pytest.approx(msis, 
+        rel=0.005)
 
 
 if __name__ == "__main__":

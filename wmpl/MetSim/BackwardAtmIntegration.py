@@ -73,7 +73,8 @@ import numpy as np
 
 from wmpl.MetSim.MetSimErosion import Constants, EARTH_ROTATION_RATE, runSimulation
 from wmpl.Utils import AtmosphereDensity
-from wmpl.Utils.AtmosphereDensity import addAtmosphereArguments, fitAtmPoly, getAtmDensity, getMSISVersion
+from wmpl.Utils.AtmosphereDensity import addAtmosphereArguments, fitAtmPoly, getAtmDensity, getAtmDensityTable, \
+    getMSISVersion
 from wmpl.Utils.TrajConversions import cartesian2Geo, derotatedRadiantAltAz, enu2ECEF, jd2Date, jd2LST
 
 
@@ -112,8 +113,10 @@ def backwardConstants(jd_ref, state_vect, m_init, h_kill=180000.0, const=None):
         m_init: [float] Mass at the start (kg), e.g. the photometric mass.
 
     Keyword arguments:
-        h_kill: [float] Height to stop at (m), 180 km by default. The atmosphere density is fitted up to it, so to
-            stop after a given time with t_kill instead, keep h_kill above the height that time reaches.
+        h_kill: [float] Height to stop at (m), 180 km by default. The atmosphere density is tabulated (and fitted)
+            up to it, so to stop after a given time with t_kill instead, keep h_kill above the height that time
+            reaches. To run in another atmosphere, replace the table (atm_table_ht, atm_table_log10_rho), which is
+            used instead of dens_co.
         const: [Constants] Physical parameters to start from (rho, sigma, gamma, shape_factor, dt, freeze_mass...),
             e.g. from a MetSim fit. It is copied, not changed. Constants() by default.
 
@@ -130,6 +133,10 @@ def backwardConstants(jd_ref, state_vect, m_init, h_kill=180000.0, const=None):
     const.dt, const.h_kill = -abs(const.dt), h_kill
     const.erosion_on = const.disruption_on = const.fragmentation_on = False
     const.dens_co = fitAtmPoly(lat, lon, const.h_init, h_kill, jd_ref)
+
+    # Tabulate the density too, the run uses the table instead of the polynomial. A run back from a deep start
+    #   spans the mesopause, where a single polynomial misses the MSIS model by tens of percent
+    const.atm_table_ht, const.atm_table_log10_rho = getAtmDensityTable(lat, lon, const.h_init, h_kill, jd_ref)
 
     return const
 
