@@ -24,7 +24,7 @@ from wmpl.Utils.Pickling import loadPickle
 from wmpl.Utils.TrajConversions import derotatedRadiantAltAz, cartesian2Geo
 from wmpl.Utils.SampleTrajectoryPositions import sampleTrajectory
 from wmpl.Utils.DynamicMassFit import pointOnTrajectory, _robust_linear_fit, fitVelocity, runFragSim
-from wmpl.Utils.AtmosphereDensity import fitAtmPoly, atmDensPoly, getAtmDensity
+from wmpl.Utils.AtmosphereDensity import fitAtmPoly, atmDensPoly, atmDensTable, getAtmDensity
 from wmpl.Utils.Math import lineFunc
 
 
@@ -218,6 +218,10 @@ def testFragmentSimulationAtmosphereFollowsMSISOverTheSimulatedHeights(traj):
     msis = np.array([getAtmDensity(traj.rend_lat, traj.rend_lon, ht, traj.jdt_ref) for ht in heights])
 
     assert atmDensPoly(heights, sr.const.dens_co) == pytest.approx(msis, rel=0.01)
+
+    # The table the simulation actually uses follows MSIS more closely still
+    assert atmDensTable(heights, sr.const.atm_table_ht, sr.const.atm_table_log10_rho) == pytest.approx(msis, 
+        rel=0.005)
 
 
 if __name__ == "__main__":
