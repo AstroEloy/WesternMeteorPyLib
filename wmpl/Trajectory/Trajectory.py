@@ -2464,7 +2464,7 @@ class Trajectory(object):
         show_jacchia=False, save_results=True, gravity_correction=True, gravity_factor=1.0, \
         plot_all_spatial_residuals=False, plot_file_type='png', traj_id=None, reject_n_sigma_outliers=3, 
         mc_cores=None, fixed_times=None, mc_runs_max=None, enable_OSM_plot=False, v_init_drag=False, \
-        v_init_drag_time=None, v_init_drag_ht=None):
+        v_init_drag_time=None, v_init_drag_ht=None, save_kml=False):
         """ Init the Ceplecha trajectory solver.
 
         Arguments:
@@ -2661,6 +2661,9 @@ class Trajectory(object):
 
         # Save results to disk if true
         self.save_results = save_results
+
+        # Write a 3D KML after saving the pickle
+        self.save_kml = save_kml
 
         # Apply the correction for gravity when estimating the trajectory
         self.gravity_correction = gravity_correction
@@ -6943,6 +6946,10 @@ class Trajectory(object):
 
                 # Save the picked trajectory structure with original points
                 savePickle(self, self.output_dir, self.file_name + '_trajectory.pickle')
+
+                if self.save_kml:
+                    from wmpl.Utils.TrajectoryKML import trajectoryToKML
+                    trajectoryToKML(self, os.path.join(self.output_dir, self.file_name + '_3D.kml'))
 
                 # Save trajectory report with original points
                 self.saveReport(self.output_dir, self.file_name + '_report.txt', \

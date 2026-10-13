@@ -1211,7 +1211,8 @@ if __name__ == "__main__":
         v_init_drag_ht=cml_args.vinitdraght, \
         show_jacchia=cml_args.jacchia,
         estimate_timing_vel=(False if cml_args.notimefit is None else cml_args.notimefit), \
-        fixed_times=cml_args.fixedtimes, mc_noise_std=cml_args.mcstd, enable_OSM_plot=cml_args.enableOSM)
+        fixed_times=cml_args.fixedtimes, mc_noise_std=cml_args.mcstd, enable_OSM_plot=cml_args.enableOSM, \
+        save_kml=cml_args.kml)
 
 
     # Report the times and heights of the points flagged as flares, if any, also in the saved report
