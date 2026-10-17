@@ -1832,6 +1832,12 @@ def extractSimParams(ps, obj_name, planet_names, reference_frame="heliocentric")
     return state_vect_hel, orb_elem, planet_dists
 
 
+# General relativity models (REBOUNDx effects). "gr" (Anderson et al. 1975) is the post-Newtonian
+#   correction from the dominant body, the Sun, applied to every body: it gets the perihelion
+#   precession and the mean motions right. "gr_full" (Newhall et al. 1983, the EIH equations) is the
+#   interaction between every pair of bodies; its cost grows as the cube of the number of bodies.
+GR_MODELS = ("gr", "gr_full")
+
 # Integrators that can be selected for the integration. IAS15 is adaptive and the default. WHFast
 # and TRACE use a fixed timestep (see FIXED_STEP_DEFAULT_DT_DAYS).
 INTEGRATORS = ("ias15", "whfast", "trace")
@@ -1898,6 +1904,9 @@ def _integrateParticles(task, progress=None):
                                  radii used for impact detection (Sun 695700 km, Earth 6371 km,
                                  Moon 1737.4 km).
             integrator:      [str]  Optional. "ias15" (default, adaptive), "whfast" or "trace".
+            gr:              [str]  Optional. General relativity: "gr_full" (default), the
+                                 post-Newtonian interaction between all pairs of bodies, or "gr",
+                                 the correction of the Sun's field on every body (see GR_MODELS).
             sun_j2:          [bool] Optional. Include the Sun's J2 (SUN_J2), symmetric about its
                                  rotation axis (sunSpinAxisEcliptic). Default True.
             earth_spin_axis: [list] Optional. Direction of the Earth's rotation axis in the
@@ -1972,7 +1981,7 @@ def _integrateParticles(task, progress=None):
     # TRACE mishandles close encounters when the timestep is negative (a REBOUND bug, present in
     # 4.6.0 and 5.1.1: a flyby integrated backward comes out ~10% off in a, forward it matches IAS15
     # to 1e-7). A backward TRACE run is therefore integrated forward in time with every velocity
-    # reversed. This is exact for gravity, GR (gr_full, quadratic in the velocities) and the Earth's
+    # reversed. This is exact for gravity, GR (gr and gr_full, quadratic in the velocities) and the Earth's
     # harmonics, which are time-reversal symmetric. Poynting-Robertson drag is not, and is handled
     # where the radiation force is set up.
     reverse_time = (integrator == "trace") and (direction == "backward")
@@ -2051,8 +2060,11 @@ def _integrateParticles(task, progress=None):
         if bname in planet_names:
             ps[bname].r = brad
 
-    # gr_full is the general relativity correction for all bodies
-    gr = rebx.load_force("gr_full")
+    # General relativity (see GR_MODELS). "gr" takes the first particle, the Sun, as the only source.
+    gr_model = task.get("gr", "gr_full")
+    if gr_model not in GR_MODELS:
+        raise ValueError("Unknown GR model {:s}, use one of {:s}.".format(str(gr_model), ", ".join(GR_MODELS)))
+    gr = rebx.load_force(gr_model)
     rebx.add_force(gr)
     gr.params["c"] = rbxConstants.C
 
@@ -3286,8 +3298,8 @@ def reboundSimulate(
         direction="forward", sim_days=60, n_outputs=500, obj_name="obj", obj_mass=0.0, mc_runs=100,
         reference_frame="heliocentric", ephem_source="local", n_cpu=None,
         show_progress=True, return_diagnostics=False, random_seed=None, beta=None, integrator="ias15",
-        dt_days=None, compute_megno=False, checkpoint_path=None, sun_j2=True, verbose=False,
-        state_vect_realizations=None):
+        dt_days=None, compute_megno=False, checkpoint_path=None, sun_j2=True, gr="gr_full",
+        verbose=False, state_vect_realizations=None):
     """ Takes an state vector (or a Trajectory object), runs REBOUND and produces orbital elements for the 
     object at the end of the simulation or at the specified time.
 
@@ -3339,6 +3351,9 @@ def reboundSimulate(
             and accurate to machine precision; the other two use a fixed timestep.
         dt_days: [float] Timestep in days for WHFast and TRACE. None (default) uses
             FIXED_STEP_DEFAULT_DT_DAYS. Ignored by IAS15.
+        gr: [str] General relativity model, "gr_full" (default; the post-Newtonian interaction between
+            all pairs of bodies) or "gr" (the Sun's post-Newtonian correction on every body, 3.3 times
+            faster, with the same results to ~1e-7 in a). See GR_MODELS.
         sun_j2: [bool] Include the Sun's J2 (SUN_J2, about its rotation axis). Default True. It moves
             Mercury's perihelion by 0.03 arcsec per century, and a meteoroid's in proportion to
             (R_Sun/q)^2, so it matters most for small perihelia.
@@ -3386,6 +3401,9 @@ def reboundSimulate(
 
     # Fail early, before any ephemeris work, if the integrator is not available
     checkIntegratorAvailable(integrator)
+
+    if gr not in GR_MODELS:
+        raise ValueError("Unknown GR model {:s}, use one of {:s}.".format(str(gr), ", ".join(GR_MODELS)))
 
     # If the trajectory is given, override the julian_date and state_vect arguments
     if traj is not None:
@@ -3455,6 +3473,7 @@ def reboundSimulate(
             "integrator": integrator,
             "dt_days": None if dt_days is None else float(dt_days),
             "sun_j2": bool(sun_j2),
+            "gr": gr,
         }
 
         if header is not None:
@@ -3550,6 +3569,7 @@ def reboundSimulate(
             "dt_days": dt_days,
             "earth_spin_axis": earth_spin_axis,
             "sun_j2": sun_j2,
+            "gr": gr,
         }
 
     if verbose:
@@ -3793,12 +3813,18 @@ if __name__ == "__main__":
                         "or trace (hybrid, fixed step; resolves close encounters; needs REBOUND >= "
                         "4.4). With whfast and trace, IAS15 integrates the object's departure from "
                         "the Earth and they take over at the first output after it. REBOUNDx may "
-                        "warn that GR (gr_full) is velocity-dependent with whfast; its measured "
-                        "effect on the orbit was below 1e-8 in a over 100 years.")
+                        "warn that GR is velocity-dependent with whfast; its measured effect on the "
+                        "orbit was below 1e-8 in a over 100 years.")
 
     parser.add_argument("--dt", type=float, default=None,
                         help="Timestep in days for whfast and trace. Default: {:g} d. Ignored by "
                         "ias15.".format(FIXED_STEP_DEFAULT_DT_DAYS["whfast"]))
+
+    parser.add_argument("--gr", type=str.lower, default="gr_full", choices=GR_MODELS,
+                        help="General relativity: gr_full (default), the post-Newtonian interaction "
+                        "between all pairs of bodies, or gr, the Sun's post-Newtonian correction on "
+                        "every body. gr is 3.3 times faster and changes the orbits by ~1e-7 in a over "
+                        "100 years; use it for large Monte Carlo runs.")
 
     parser.add_argument("--no_sun_j2", action="store_true",
                         help="Leave out the Sun's J2 (on by default: J2 = {:.4e}, about the Sun's rotation "
@@ -4046,7 +4072,7 @@ if __name__ == "__main__":
             ephem_source=ephem_source, n_cpu=n_cpu, return_diagnostics=True,
             random_seed=random_seed, beta=beta, integrator=args.integrator, dt_days=dt_days,
             compute_megno=args.compute_megno, checkpoint_path=checkpoint_path, sun_j2=not args.no_sun_j2,
-            verbose=args.verbose
+            gr=args.gr, verbose=args.verbose
             )
 
     t_run_start = time.time()
@@ -4298,7 +4324,8 @@ if __name__ == "__main__":
 
     print("  Frame        : {:s}".format(reference_frame))
     j2_axis = "" if harmonicsSpinAxisSupported() else " (about the ecliptic pole: REBOUNDx < 4.4.0)"
-    forces_str = "gravity + GR + {:s}Earth J2/J4{:s}".format("" if args.no_sun_j2 else "Sun J2 + ", j2_axis)
+    forces_str = "gravity + GR ({:s}) + {:s}Earth J2/J4{:s}".format(
+        "Sun" if args.gr == "gr" else "all bodies", "" if args.no_sun_j2 else "Sun J2 + ", j2_axis)
     if beta is not None:
         forces_str += " + radiation (beta = {:.3e})".format(beta)
     print("  Forces       : {:s}".format(forces_str))
@@ -4997,6 +5024,7 @@ if __name__ == "__main__":
             "dt_days": dt_days,
             "fixed_step_from_days": fixed_from,
             "sun_j2": None if args.no_sun_j2 else SUN_J2,
+            "gr": args.gr,
             # Axis of the Earth's J2/J4 in the ecliptic J2000 frame (null: the ecliptic pole was used,
             #   REBOUNDx < 4.4.0)
             "earth_spin_axis": (earthSpinAxisEcliptic(astropy.time.Time(
