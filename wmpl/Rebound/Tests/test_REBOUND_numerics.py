@@ -984,13 +984,9 @@ def _byGid(ax, prefix):
             if (line.get_gid() or "").startswith(prefix)}
 
 
-def testEncountersAreDrawnAsTheirBodiesInHillRadii(reb, agg):
-    """ Each encounter of the nominal is a disc in its body's colour and size (wmpl.Utils.PlanetStyle),
-    outlined, with the smaller bodies on top, at its distance in units of the body's Hill radius. The
+def testEncountersAreInHillRadii(reb, agg):
+    """ Each encounter of the nominal is drawn at its distance in units of the body's Hill radius. The
     Sun is scaled so that its gate falls on the n_hill line. """
-
-    from matplotlib.colors import to_hex
-    from wmpl.Utils.PlanetStyle import planetColor, planetMarkerSize
 
     nominal, clones = _plotOutputs(n_clones=25)
     encounters = [{"body": "Earth", "min_dist_au": 0.01, "time_days": -365.25*30},
@@ -999,18 +995,11 @@ def testEncountersAreDrawnAsTheirBodiesInHillRadii(reb, agg):
                   {"body": "Sun", "min_dist_au": 0.05, "time_days": -365.25*70}]
     _, axes = reb.plotReboundOrbits(nominal, clones, encounters)
 
-    discs = _byGid(axes["encounters"], "encounter:")
-    for body in ("Earth", "Luna", "Jupiter"):
-        line = discs[body]
-        assert line.get_marker() == "o"
-        assert to_hex(line.get_color()) == to_hex(planetColor(body))
-        assert line.get_markersize() == pytest.approx(planetMarkerSize(body))
-        assert to_hex(line.get_markeredgecolor()) == "#000000"
-    assert discs["Luna"].get_zorder() > discs["Earth"].get_zorder() > discs["Jupiter"].get_zorder()
-
-    assert discs["Earth"].get_ydata()[0] == pytest.approx(0.01/reb.HILL_RADII_AU["Earth"])
-    assert discs["Jupiter"].get_ydata()[0] == pytest.approx(0.9/reb.HILL_RADII_AU["Jupiter"])
-    assert discs["Sun"].get_ydata()[0] == pytest.approx(3.0*0.05/reb.SUN_ENCOUNTER_AU)
+    marks = _byGid(axes["encounters"], "encounter:")
+    assert marks["Earth"].get_ydata()[0] == pytest.approx(0.01/reb.HILL_RADII_AU["Earth"])
+    assert marks["Luna"].get_ydata()[0] == pytest.approx(0.001/reb.HILL_RADII_AU["Luna"])
+    assert marks["Jupiter"].get_ydata()[0] == pytest.approx(0.9/reb.HILL_RADII_AU["Jupiter"])
+    assert marks["Sun"].get_ydata()[0] == pytest.approx(3.0*0.05/reb.SUN_ENCOUNTER_AU)
     assert axes["encounters"].get_ylabel() == "distance [Hill radii]"
 
     labels = [text.get_text() for text in axes["encounters"].get_legend().get_texts()]

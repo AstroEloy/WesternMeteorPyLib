@@ -584,7 +584,8 @@ options.
   - the **clones' encounters** as faint dots, which show when and with which planets the ensemble meets,
     as opposed to the single nominal history;
   - for a body with none of these, its **closest approach** of the run as a ring ("never closer": the
-    object never came closer to that body), so every tracked body appears. This is also what a results file from an older version, without passages, shows.
+    object never came closer to that body), so every tracked body appears. This is also what a results
+    file from an older version, without passages, shows.
 
   The Sun has no Hill sphere: its distance is scaled so that its 0.1 AU gate falls on the same line.
   In runs shorter than two years the distance to the Earth at the outputs is drawn too, as it shows the
