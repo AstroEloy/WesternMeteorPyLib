@@ -967,20 +967,29 @@ def testFigureWithoutClonesOrWithAShortClone(reb, agg, tmp_path):
     assert "encounter: Earth" in labels and "encounter: Jupiter" in labels
 
 
-def testEncountersAreDrawnAsTheirBodiesAndTheHorizonIsTimed(reb, agg):
+def testTheHorizonLegendGivesItsTime(reb, agg):
+
+    nominal, clones = _plotOutputs(n_clones=25)
+    horizon = reb.predictabilityHorizon(nominal, clones)
+    horizon["horizon_days"] = -365.25*31
+    _, axes = reb.plotReboundOrbits(nominal, clones, [], horizon=horizon)
+
+    labels = axes["predictability"].get_legend_handles_labels()[1]
+    assert "predictability horizon (31 years)" in labels
+
+
+def testEncountersAreDrawnAsTheirBodies(reb, agg):
     """ Each encounter is a disc in its body's colour and size (wmpl.Utils.PlanetStyle), outlined,
-    with the smaller bodies on top; the horizon legend entry gives its time. """
+    with the smaller bodies on top. """
 
     from matplotlib.colors import to_hex
     from wmpl.Utils.PlanetStyle import planetColor, planetMarkerSize
 
     nominal, clones = _plotOutputs(n_clones=25)
-    horizon = reb.predictabilityHorizon(nominal, clones)
-    horizon["horizon_days"] = -365.25*31
     encounters = [{"body": "Earth", "min_dist_au": 0.01, "time_days": -365.25*30},
                   {"body": "Luna", "min_dist_au": 0.01, "time_days": -365.25*30},
                   {"body": "Jupiter", "min_dist_au": 0.9, "time_days": -365.25*60}]
-    _, axes = reb.plotReboundOrbits(nominal, clones, encounters, horizon=horizon)
+    _, axes = reb.plotReboundOrbits(nominal, clones, encounters)
 
     discs = {line.get_label(): line for line in axes["encounters"].get_lines()
              if line.get_label().startswith("encounter: ")}
@@ -992,6 +1001,3 @@ def testEncountersAreDrawnAsTheirBodiesAndTheHorizonIsTimed(reb, agg):
         assert to_hex(line.get_markeredgecolor()) == "#000000"
     assert discs["encounter: Luna"].get_zorder() > discs["encounter: Earth"].get_zorder() \
         > discs["encounter: Jupiter"].get_zorder()
-
-    labels = axes["predictability"].get_legend_handles_labels()[1]
-    assert "predictability horizon (31 years)" in labels

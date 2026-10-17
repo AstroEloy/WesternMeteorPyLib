@@ -7,19 +7,20 @@ body looks the same in both.
 from __future__ import print_function, division, absolute_import
 
 
-# Colour of each body, close to its appearance: grey Mercury, pale golden Venus, blue Earth, grey
-#   Moon, rust Mars, tan Jupiter, pale gold Saturn, pale cyan Uranus and deep blue Neptune
+# Colour of each body, close to its appearance and with distinct hues so the bodies tell apart: amber
+#   Sun, grey Mercury, lemon Venus, blue Earth, light grey Moon, red Mars, burnt orange Jupiter, sand
+#   Saturn, cyan Uranus and indigo Neptune
 PLANET_COLORS = {
-    "Sun": "#ffcc33",
-    "Mercury": "#9e9a94",
-    "Venus": "#e3c16f",
-    "Earth": "#2a7bd6",
-    "Moon": "#c4c4c4",
-    "Mars": "#c1440e",
-    "Jupiter": "#d39c64",
-    "Saturn": "#e4cf8c",
-    "Uranus": "#9fe0e6",
-    "Neptune": "#3b5fe0",
+    "Sun": "#ffb000",
+    "Mercury": "#7f7f7f",
+    "Venus": "#f0dc5a",
+    "Earth": "#1f6fe0",
+    "Moon": "#b0b0b0",
+    "Mars": "#e0301e",
+    "Jupiter": "#c26a2e",
+    "Saturn": "#d8b98a",
+    "Uranus": "#4fd0d6",
+    "Neptune": "#3a3fd0",
 }
 
 # Mean radius in km (IAU)
@@ -45,11 +46,11 @@ PLANET_EDGE_WIDTH = 0.5
 
 # Marker sizes grow as radius**PLANET_SIZE_EXPONENT, a compression of the real ratios (Jupiter is 11
 #   Earth radii, the Moon 0.27) that keeps the Moon visible and Jupiter from covering the panel: the
-#   order is kept, with Jupiter drawn 2.1 times the Earth, Mars 0.83 and the Moon 0.67 times
-PLANET_SIZE_EXPONENT = 0.3
+#   order is kept, with Jupiter drawn 1.8 times the Earth, Mars 0.85 and the Moon 0.72 times
+PLANET_SIZE_EXPONENT = 0.25
 
 # The Sun is drawn at most this many times the Earth's size, a little above Jupiter
-SUN_MAX_SIZE_RATIO = 2.5
+SUN_MAX_SIZE_RATIO = 1.9
 
 # Alternative names of the bodies (REBOUND calls the Moon "Luna")
 _ALIASES = {"Luna": "Moon"}

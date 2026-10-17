@@ -572,9 +572,9 @@ options.
 - **Time** in years for spans of two years or more, in days otherwise. The predictability horizon is
   the dashed red vertical line on every panel, and its time is given in the legend.
 - **Encounters as the bodies.** On the distance panel each close encounter is a disc at its closest
-  approach, in the body's colour (blue Earth, grey Moon, rust Mars, tan Jupiter, ...) with a thin black
-  outline, sized as radius^0.3 so the order of the real sizes is kept without Jupiter covering the
-  panel: Jupiter is 2.1 times the Earth, the Moon 0.67 times. Smaller bodies are drawn on top. The
+  approach, in the body's colour (blue Earth, grey Moon, red Mars, burnt orange Jupiter, ...) with a thin
+  black outline, sized as radius^0.25 so the order of the real sizes is kept without Jupiter covering the
+  panel: Jupiter is 1.8 times the Earth, the Moon 0.72 times. Smaller bodies are drawn on top. The
   palette and the sizes live in `wmpl.Utils.PlanetStyle` and are shared with the solver's
   `_orbit_top`/`_orbit_side` plots, where the outline is black on the light background and white on
   the dark one.
