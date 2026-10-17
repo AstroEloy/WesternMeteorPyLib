@@ -3354,6 +3354,40 @@ def plotParentBodyCriteria(series, labels, file_path, title=None, max_bodies=8):
 ### ###
 
 
+
+def integrationEpochs(jd_ref_utc, elapsed_days):
+    """ The start and end epochs of an integration in TDB, the time scale of the ephemeris and of the
+    integration, and in UTC, the scale of a trajectory's reference time (traj.jdt_ref).
+
+    The integration runs in TDB, so the end is the start in TDB plus the elapsed days; adding them to
+    the UTC reference time instead would leave the end ~69 s off (TDB - UTC in the 2020s).
+
+    Arguments:
+        jd_ref_utc: [float] Julian date of the start, in UTC.
+        elapsed_days: [float] Signed integration time in days (negative backward).
+
+    Return:
+        [dict] "start_jd_utc", "start_jd_tdb", "final_jd_tdb", "final_jd_utc" and "start_utc"/"final_utc"
+            (ISO strings).
+    """
+
+    # Imported here too, as the module imports astropy.time only together with REBOUND
+    import astropy.time
+
+    start = astropy.time.Time(jd_ref_utc, format='jd', scale='utc')
+    start_tdb = start.tdb.jd
+    final = astropy.time.Time(start_tdb + elapsed_days, format='jd', scale='tdb').utc
+
+    return {
+        "start_jd_utc": float(jd_ref_utc),
+        "start_jd_tdb": float(start_tdb),
+        "final_jd_tdb": float(start_tdb + elapsed_days),
+        "final_jd_utc": float(final.jd),
+        "start_utc": start.iso,
+        "final_utc": final.iso,
+    }
+
+
 def reboundSimulate(
         julian_date, state_vect, traj=None,
         direction="forward", sim_days=60, n_outputs=500, obj_name="obj", obj_mass=0.0, mc_runs=100,
@@ -4101,9 +4135,9 @@ if __name__ == "__main__":
 
     # State the integration span up front, so it is visible while the integration is running and
     # not only in the summary printed at the end
+    start_epochs = integrationEpochs(jd_start, 0.0)
     print("Integrating {:s} {:s} from the epoch {:.6f} JD (TDB) = {:s} UTC.".format(
-        formatTimeSpan(sim_days), direction, jd_start,
-        astropy.time.Time(jd_start, format='jd', scale='utc').iso))
+        formatTimeSpan(sim_days), direction, start_epochs["start_jd_tdb"], start_epochs["start_utc"]))
 
     # Run the simulation for the given number of days from the epoch of the trajectory
     def _runSimulation():
@@ -4292,11 +4326,10 @@ if __name__ == "__main__":
     # Extract the final time in days
     final_sim_days = simTimeToDays(sim_outputs[-1][0])
 
-    # Compute the final epoch
-    final_epoch_jd = jd_start + final_sim_days
-
-    # Convert the epoch to UTC
-    time_utc = astropy.time.Time(final_epoch_jd, format='jd', scale='utc')
+    # The start and final epochs, in TDB (the scale of the integration) and in UTC (that of the
+    #   trajectory's reference time)
+    epochs = integrationEpochs(jd_start, final_sim_days)
+    final_epoch_jd = epochs["final_jd_tdb"]
 
     ###
 
@@ -4371,8 +4404,8 @@ if __name__ == "__main__":
     if beta is not None:
         forces_str += " + radiation (beta = {:.3e})".format(beta)
     print("  Forces       : {:s}".format(forces_str))
-    print("  Start epoch  : {:.6f} JD (TDB)".format(jd_start))
-    print("  Final epoch  : {:.6f} JD (TDB)  =  {:s} UTC".format(final_epoch_jd, time_utc.iso))
+    print("  Start epoch  : {:.6f} JD (TDB)  =  {:s} UTC".format(epochs["start_jd_tdb"], epochs["start_utc"]))
+    print("  Final epoch  : {:.6f} JD (TDB)  =  {:s} UTC".format(final_epoch_jd, epochs["final_utc"]))
     if len(sim_outputs_mc):
         print("  Monte Carlo  : {:d} realizations on {:d} core(s), seed {:d}".format(
             len(sim_outputs_mc), n_cpu, random_seed))
@@ -4607,7 +4640,7 @@ if __name__ == "__main__":
             f.write("*** state before the impact, not a surviving orbit.\n\n")
 
         f.write("Orbital elements {:s} {:s} from the epoch {:.6f} JD (TDB){:s}\n".format(
-            formatTimeSpan(achieved_days), direction, jd_start,
+            formatTimeSpan(achieved_days), direction, epochs["start_jd_tdb"],
             "" if abs(achieved_days - sim_days) <= 1e-6
             else " (requested {:s}, stopped early)".format(formatTimeSpan(sim_days))))
         f.write("a    = {:>10.6f}{:s} {:s}\n".format(sim_outputs[-1][2].a*dist_unit_multiplier, a_ci_str, a_units))
@@ -5056,9 +5089,11 @@ if __name__ == "__main__":
             "ephemeris": "horizons" if args.horizons else "local_de430",
             "n_outputs": args.outputs,
             "beta": beta,
-            "start_epoch_jd_tdb": jd_start,
+            "start_epoch_jd_tdb": epochs["start_jd_tdb"],
+            "start_epoch_jd_utc": epochs["start_jd_utc"],
             "final_epoch_jd_tdb": final_epoch_jd,
-            "final_epoch_utc": time_utc.iso,
+            "final_epoch_jd_utc": epochs["final_jd_utc"],
+            "final_epoch_utc": epochs["final_utc"],
             "mc_runs": len(sim_outputs_mc),
             "random_seed": random_seed,
             "runtime_s": sim_wall,
