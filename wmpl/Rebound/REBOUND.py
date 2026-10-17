@@ -664,6 +664,61 @@ def readReboundCheckpoint(path):
     return header, records, valid_size
 
 
+def _sha1(obj):
+    """ SHA-1 of a JSON-serialisable structure, with the floats at full precision (their shortest exact
+    representation), for the checkpoint signature. """
+
+    import hashlib
+
+    return hashlib.sha1(json.dumps(obj, sort_keys=True, default=float).encode()).hexdigest()
+
+
+def checkpointSignature(task, julian_date, state_vect, realizations, random_seed, obj_name, sim_days,
+                        n_outputs, ephem_source):
+    """ The run parameters a checkpoint is resumed against (see reboundSimulate).
+
+    It keeps the main parameters by value, so that a mismatch can be reported, and two hashes that make
+    the comparison complete: one of the integration task without the particles (the planets, the output
+    times and every setting of the dynamics, including any added later), and one of the Monte Carlo
+    realizations themselves, which may have been sampled or given.
+
+    Arguments:
+        task: [dict] The integration task (see _integrateParticles), particles left out of the hash.
+        julian_date: [float] Reference Julian date of the run.
+        state_vect: [list] Nominal state vector (ECI, m and m/s).
+        realizations: [list] Monte Carlo realizations of state_vect, possibly empty.
+        random_seed: [int] Seed the realizations were drawn with, or None.
+        obj_name: [str] Name of the nominal solution.
+        sim_days: [float] Length of the integration in days.
+        n_outputs: [int] Number of output times.
+        ephem_source: [str] Source of the planet positions.
+
+    Return:
+        [dict] The signature.
+    """
+
+    settings = {k: v for k, v in task.items() if k not in ("particle_states", "particle_names")}
+    with_mc = len(realizations) > 0
+
+    return {
+        "julian_date": float(julian_date),
+        "state_vect": [float(v) for v in state_vect],
+        "mc_runs": len(realizations),
+        "random_seed": random_seed if with_mc else None,
+        "obj_name": str(obj_name),
+        "direction": task.get("direction"),
+        "sim_days": float(sim_days),
+        "n_outputs": int(n_outputs),
+        "reference_frame": task.get("reference_frame"),
+        "ephem_source": ephem_source,
+        "beta": task.get("beta"),
+        "integrator": task.get("integrator"),
+        "dt_days": task.get("dt_days"),
+        "integration_sha1": _sha1(settings),
+        "realizations_sha1": _sha1(np.asarray(realizations, dtype=float).tolist()) if with_mc else None,
+    }
+
+
 def _checkpointDifferences(saved, current):
     """ The run parameters that differ between a checkpoint and this run, as (key, saved, current). """
 
@@ -3455,49 +3510,6 @@ def reboundSimulate(
 
     with_mc = len(state_vect_realizations) > 0
 
-    if checkpoint_path:
-
-        # The realizations themselves are checked, by their hash, since they may come from outside (e.g. run
-        #   back through the atmosphere) rather than from the trajectory's covariance and the seed
-        import hashlib
-        realizations_sha1 = (hashlib.sha1(np.asarray(state_vect_realizations, dtype=float).tobytes()).hexdigest()
-                             if with_mc else None)
-
-        signature = {
-            "julian_date": float(julian_date),
-            "state_vect": [float(v) for v in state_vect],
-            "realizations_sha1": realizations_sha1,
-            "mc_runs": len(state_vect_realizations),
-            "random_seed": random_seed if with_mc else None,
-            "obj_name": str(obj_name),
-            "direction": direction,
-            "sim_days": float(sim_days),
-            "n_outputs": int(n_outputs),
-            "reference_frame": reference_frame,
-            "ephem_source": ephem_source,
-            "beta": None if beta is None else float(beta),
-            "integrator": integrator,
-            "dt_days": None if dt_days is None else float(dt_days),
-            "sun_j2": bool(sun_j2),
-            "gr": gr,
-        }
-
-        if header is not None:
-            differences = _checkpointDifferences(header["signature"], signature)
-            if differences:
-                raise ReboundCheckpointMismatch(checkpoint_path, differences)
-
-        checkpoint = _CheckpointWriter(checkpoint_path, signature,
-                                       valid_size=(valid_size if header is not None else None))
-
-        if show_progress:
-            n_orbits_saved = len([k for k in checkpoint_records if k != _CHECKPOINT_MEGNO_KEY])
-            if n_orbits_saved:
-                print("Resuming from the checkpoint {:s}: {:d} of {:d} orbits already "
-                      "integrated.".format(checkpoint_path, n_orbits_saved, 1 + len(state_vect_realizations)))
-            else:
-                print("Saving each integrated orbit to the checkpoint {:s}".format(checkpoint_path))
-
     # All the outputs stay in memory until the end, so warn up front if they may not fit
     n_orbits = 1 + len(state_vect_realizations)
     n_workers = 0
@@ -3590,6 +3602,30 @@ def reboundSimulate(
             return None
         return lambda t_days: line.show("{:s}: {:s} integrated".format(
             label, formatTimeSpan(t_days, decimals=0)), t_days/sim_days)
+
+    # Checkpoint: its signature holds the whole integration task (without the particles), so any setting
+    #   that changes the dynamics is compared, and the realizations themselves
+    if checkpoint_path:
+
+        signature = checkpointSignature(
+            _make_task([], []), julian_date, state_vect, state_vect_realizations, random_seed, obj_name,
+            sim_days, n_outputs, ephem_source)
+
+        if header is not None:
+            differences = _checkpointDifferences(header["signature"], signature)
+            if differences:
+                raise ReboundCheckpointMismatch(checkpoint_path, differences)
+
+        checkpoint = _CheckpointWriter(checkpoint_path, signature,
+                                       valid_size=(valid_size if header is not None else None))
+
+        if show_progress:
+            n_orbits_saved = len([k for k in checkpoint_records if k != _CHECKPOINT_MEGNO_KEY])
+            if n_orbits_saved:
+                print("Resuming from the checkpoint {:s}: {:d} of {:d} orbits already "
+                      "integrated.".format(checkpoint_path, n_orbits_saved, 1 + len(state_vect_realizations)))
+            else:
+                print("Saving each integrated orbit to the checkpoint {:s}".format(checkpoint_path))
 
     # Nominal solution, integrated in its own simulation (in the main process)
     if obj_name in checkpoint_records:
