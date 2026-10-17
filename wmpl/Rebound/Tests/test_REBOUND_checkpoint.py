@@ -175,6 +175,22 @@ def testCheckpointDifferences(reb):
 ### Resuming a real integration ###
 
 
+def _same(a, b):
+    """ Whether two diagnostics, dicts, lists and values, are equal, comparing the arrays (the MOID series)
+    element by element, with NaN equal to NaN: == on a dict that holds an array is ambiguous. """
+
+    if isinstance(a, np.ndarray) or isinstance(b, np.ndarray):
+        return np.array_equal(np.asarray(a), np.asarray(b), equal_nan=True)
+
+    if isinstance(a, dict) and isinstance(b, dict):
+        return (a.keys() == b.keys()) and all(_same(a[k], b[k]) for k in a)
+
+    if isinstance(a, (list, tuple)) and isinstance(b, (list, tuple)):
+        return (len(a) == len(b)) and all(_same(x, y) for x, y in zip(a, b))
+
+    return a == b
+
+
 def _run(reb, traj, checkpoint_path, **kwargs):
 
     args = dict(direction="backward", sim_days=60, n_outputs=40, mc_runs=3, n_cpu=1,
@@ -215,7 +231,7 @@ def testCheckpointHoldsEveryOrbit(reb, exampleTraj, tmp_path):
     assert records[name]["outputs"][name] == outputs
     for mc_name, rows in outputs_mc.items():
         assert records[mc_name]["outputs"][mc_name] == rows
-        assert records[mc_name]["diagnostics"][mc_name] == diagnostics[mc_name]
+        assert _same(records[mc_name]["diagnostics"][mc_name], diagnostics[mc_name])
 
     # The size estimate of the checkpoint matches what was written to within 25%
     expected = reb.estimateOutputSize(40, 4)["checkpoint"]
@@ -248,7 +264,7 @@ def testCutRunResumesWithTheSameResults(reb, exampleTraj, tmp_path, monkeypatch)
     assert calls == [name + "_MC_1", name + "_MC_2"]
     assert outputs_r == outputs
     assert outputs_mc_r == outputs_mc
-    assert diagnostics_r == diagnostics
+    assert _same(diagnostics_r, diagnostics)
 
     # The checkpoint is complete again
     assert set(reb.readReboundCheckpoint(cut_path)[1]) == set(records)
