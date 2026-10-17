@@ -69,12 +69,13 @@ def _row(t, orb, earth_dist):
 
 
 def testOutputTimesAreTheOnesReboundSimulateUsed(reb):
-    """ The refactored output times are the ones reboundSimulate used to compute inline. """
+    """ The refactored output times are the ones reboundSimulate used to compute inline, in the time
+    unit of G = 1 (DAYS_PER_SIM_TIME). """
 
     for direction, sign in (("forward", 1.0), ("backward", -1.0)):
 
         times = reb.outputTimes(3652.5, 200, direction)
-        expected = np.linspace(0, sign*2.0*np.pi*(3652.5/365.25), 200)
+        expected = np.linspace(0, sign*reb.daysToSimTime(3652.5), 200)
 
         assert np.allclose(times, expected, rtol=0, atol=1e-12)
 
