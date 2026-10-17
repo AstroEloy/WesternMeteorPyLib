@@ -7,13 +7,13 @@ body looks the same in both.
 from __future__ import print_function, division, absolute_import
 
 
-# Colour of each body, close to its appearance and with distinct hues so the bodies tell apart: amber
-#   Sun, grey Mercury, lemon Venus, blue Earth, light grey Moon, red Mars, burnt orange Jupiter, sand
+# Colour of each body, close to its appearance and with distinct hues so the bodies tell apart: yellow
+#   Sun, grey Mercury, amber Venus, blue Earth, light grey Moon, red Mars, burnt orange Jupiter, sand
 #   Saturn, cyan Uranus and indigo Neptune
 PLANET_COLORS = {
-    "Sun": "#ffb000",
+    "Sun": "#f0dc5a",
     "Mercury": "#7f7f7f",
-    "Venus": "#f0dc5a",
+    "Venus": "#ffb000",
     "Earth": "#1f6fe0",
     "Moon": "#b0b0b0",
     "Mars": "#e0301e",
