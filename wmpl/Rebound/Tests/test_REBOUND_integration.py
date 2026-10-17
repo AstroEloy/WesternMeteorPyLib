@@ -257,13 +257,13 @@ def testEndToEndIntegrationMatchesReference(realReb):
     # The within-step refinement added in #99 moves this off the step-end value it had before
     assert diag["min_time_days"]["Luna"] == pytest.approx(-0.0426152665, rel=1e-6)
 
-    # The nominal records every passage within PASSAGE_MAX_HILL Hill radii, its encounters included
-    passages = diag["passages"]
-    assert passages
-    assert all(p["n_hill"] < realReb.PASSAGE_MAX_HILL for p in passages)
-    for enc in diag["encounters"]:
-        if enc["body"] != "Sun":
-            assert any((p["body"] == enc["body"]) and (p["time_days"] == enc["time_days"]) for p in passages)
+    # The MOID with each planet at every output (on by default). No distance can be smaller than the
+    #   MOID of the orbits at that time, and the orbits barely change between outputs far from
+    #   Jupiter, so the closest approach to it is at least its smallest MOID
+    moid = diag["moid_au"]
+    assert set(moid) == set(realReb.MOID_BODIES)
+    assert all(len(v) == len(sim_outputs) for v in moid.values())
+    assert min(moid["Jupiter"]) <= diag["min_dist_au"]["Jupiter"]
 
 
 def testLiveProgressReportsTheTimeIntegrated(realReb, monkeypatch):

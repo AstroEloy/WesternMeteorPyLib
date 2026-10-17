@@ -25,6 +25,7 @@ import scipy
 import scipy.stats
 import matplotlib.pyplot as plt
 from matplotlib.lines import Line2D
+from matplotlib.patches import Patch
 
 from jplephem.spk import SPK
 
@@ -61,6 +62,7 @@ from wmpl.Utils.TrajConversions import (
 )
 from wmpl.Utils.Math import rotateVector
 from wmpl.Utils.PlanetStyle import planetColor, planetMarkerSize, PLANET_EDGE_COLOR, PLANET_EDGE_WIDTH
+from wmpl.Utils.MOID import calcMOID
 from wmpl.Utils.Earth import calcTrueObliquity
 
 
@@ -307,11 +309,20 @@ PLANET_ORDER = ["Sun", "Mercury", "Venus", "Earth", "Luna", "Mars", "Jupiter", "
 # Jones et al. (2018, SSRv 214, 20), q < 33 R_Sun = 0.153 AU.
 SUN_ENCOUNTER_AU = 0.1
 
-# Passages of the nominal solution by a planet or the Moon are recorded out to this many Hill radii, so
-#   the figure can show how close the object came at every passage, not only inside the encounter
-#   threshold. Further out they say nothing about the planet's pull (Mercury, seen from an
-#   Earth-crossing orbit, stays hundreds of Hill radii away).
-PASSAGE_MAX_HILL = 100.0
+# The close-approach panel of the figure leaves out a body the object never came within this many of
+#   its Hill radii of: it never mattered (Mercury, seen from an Earth-crossing orbit, stays hundreds of
+#   Hill radii away)
+APPROACH_MAX_HILL = 100.0
+
+# Bodies the MOID is computed with (see wmpl.Utils.MOID). The Moon orbits the Earth, so a heliocentric
+#   MOID with it means nothing; the Earth's stands for both.
+MOID_BODIES = ("Mercury", "Venus", "Earth", "Mars", "Jupiter", "Saturn", "Uranus", "Neptune")
+
+# Percentiles of the clones' MOID kept at each output
+MOID_PERCENTILES = (2.5, 16, 50, 84, 97.5)
+
+# Bottom of the close-approach panel, in Hill radii: where two orbits cross the MOID dives towards zero
+MOID_PLOT_MIN_HILL = 1e-3
 
 # Radius of the Sun in AU (IAU 2015 nominal, 695 700 km), used for impact detection
 SUN_RADIUS_AU = 695700.0/149597870.7
@@ -2055,6 +2066,115 @@ def _reverseVelocities(sim):
         p.vx, p.vy, p.vz = -p.vx, -p.vy, -p.vz
 
 
+def _orbitTuple(orbit):
+    """ (a, e, inc, Omega, omega) of a REBOUND orbit, radians. """
+
+    return (orbit.a, orbit.e, orbit.inc, orbit.Omega, orbit.omega)
+
+
+def _moidSeries(planet_rows, object_rows, bodies):
+    """ MOID of one particle with each body at each of its outputs.
+
+    Arguments:
+        planet_rows: [list] Per output, the (a, e, inc, Omega, omega) of each body, in the order of bodies.
+        object_rows: [list] Per output of the particle, (output index, its (a, e, inc, Omega, omega)).
+        bodies: [list] Body names.
+
+    Return:
+        [dict] {body: [MOID in AU, or None where an orbit is not elliptical]}.
+    """
+
+    if not object_rows:
+        return {b: [] for b in bodies}
+
+    k = np.array([row[0] for row in object_rows])
+    obj = np.array([row[1] for row in object_rows])              # (n, 5)
+    planets = np.array(planet_rows)[k]                            # (n, n_bodies, 5)
+
+    moid = calcMOID(*[obj[:, None, j] for j in range(5)], *[planets[:, :, j] for j in range(5)])
+
+    return {b: [float(x) if np.isfinite(x) else None for x in moid[:, i]] for i, b in enumerate(bodies)}
+
+
+def moidSummary(nominal_diag, clone_diag, percentiles=MOID_PERCENTILES):
+    """ The MOID of the nominal solution with each body at each output, and the percentiles of the
+    clones' MOID at the same outputs.
+
+    Arguments:
+        nominal_diag: [dict] Diagnostics of the nominal solution (see reboundSimulate).
+        clone_diag: [dict] {clone name: diagnostics}, possibly empty.
+
+    Keyword arguments:
+        percentiles: [tuple] Percentiles of the clones kept. Default MOID_PERCENTILES.
+
+    Return:
+        [dict or None] None if the MOID was not computed. Otherwise
+            {"bodies": [names], "nominal_au": {body: [MOID per output]}, "percentiles": [...],
+             "clones_au": {body: [[MOID at each output] per percentile]} or None without clones,
+             "n_clones": number of clones}. Missing values are None. A clone that ended early (an
+            impact) counts only over its own outputs.
+    """
+
+    nominal = (nominal_diag or {}).get("moid_au")
+    if not nominal:
+        return None
+
+    bodies = list(nominal)
+    n = max(len(v) for v in nominal.values())
+    clones = [d["moid_au"] for d in (clone_diag or {}).values() if d.get("moid_au")]
+
+    clones_au = None
+    if clones:
+        clones_au = {}
+        for body in bodies:
+            stack = np.full((len(clones), n), np.nan)
+            for j, c in enumerate(clones):
+                v = np.array([np.nan if x is None else x for x in c.get(body, [])], dtype=float)[:n]
+                stack[j, :len(v)] = v
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore", RuntimeWarning)
+                p = np.nanpercentile(stack, percentiles, axis=0)
+            clones_au[body] = [[float(x) if np.isfinite(x) else None for x in row] for row in p]
+
+    return {"bodies": bodies, "nominal_au": nominal, "percentiles": list(percentiles),
+            "clones_au": clones_au, "n_clones": len(clones)}
+
+
+def _moidReportLines(moid, t_days, n_hill, k_dep=0):
+    """ Human-readable lines summarising a moidSummary result: per body, the nominal's smallest MOID
+    after the departure from the Earth and when, and the fraction of clones within n_hill Hill radii at
+    the end. Bodies that never come within APPROACH_MAX_HILL Hill radii are left out. """
+
+    lines = ["MOID with the planets (nominal solution after the departure from the Earth{:s}):".format(
+        "; clones at the end of the run" if moid["clones_au"] else "")]
+    t_days = np.asarray(t_days, dtype=float)
+
+    for body in moid["bodies"]:
+        hill = HILL_RADII_AU[body]
+        v = np.array([np.nan if x is None else x for x in moid["nominal_au"][body]], dtype=float)
+        v[:k_dep] = np.nan
+        if (not np.any(np.isfinite(v))) or (np.nanmin(v)/hill > APPROACH_MAX_HILL):
+            continue
+        k = int(np.nanargmin(v))
+        t_min = t_days[min(k, len(t_days) - 1)]
+        line = "  {:<8s} min {:s} AU ({:.2g} Hill radii) at t = {:s}{:s}".format(
+            body, "{:.5f}".format(v[k]) if v[k] >= 1e-4 else "{:.1e}".format(v[k]), v[k]/hill,
+            "-" if t_min < 0 else "", _spanText(t_min))
+
+        clones = (moid["clones_au"] or {}).get(body)
+        if clones is not None:
+            # Fraction of clones within n_hill Hill radii at the end, from the percentiles: the largest
+            #   percentile still inside the threshold
+            last = [row[-1] for row in clones]
+            inside = [p for p, x in zip(moid["percentiles"], last) if (x is not None) and (x < n_hill*hill)]
+            line += "; clones within {:g} Hill radii at the end: {:s}".format(
+                n_hill, "> {:g}%".format(max(inside)) if inside else "< {:g}%".format(moid["percentiles"][0]))
+
+        lines.append(line)
+
+    return lines
+
+
 def _integrateParticles(task, progress=None):
     """ Build a REBOUND simulation from precomputed planet states and integrate one or more test
     particles through it, returning their per-timestep orbital elements and distances.
@@ -2092,9 +2212,8 @@ def _integrateParticles(task, progress=None):
                                  leaves REBOUNDx's default, the z axis (the ecliptic pole).
             dt_days:         [float] Optional. Timestep in days for the fixed-step integrators.
                                  Ignored by IAS15. Default FIXED_STEP_DEFAULT_DT_DAYS[integrator].
-            track_passages:  [bool] Optional. Also record every passage by a planet or the Moon
-                                 within PASSAGE_MAX_HILL Hill radii ("passages" in the diagnostics).
-                                 Used for the nominal solution only. Default False.
+            compute_moid:    [bool] Optional. Compute the MOID with each of MOID_BODIES at every
+                                 output ("moid_au" in the diagnostics). Default False.
 
     Keyword arguments:
         progress: [callable] Optional. Called as progress(t_days) with the time integrated so far,
@@ -2112,9 +2231,8 @@ def _integrateParticles(task, progress=None):
                                  per local minimum of an object-body distance inside n_hill Hill
                                  radii (inside SUN_ENCOUNTER_AU for the Sun), in the format of
                                  encountersFromMinDistances,
-                "passages":      [list] with track_passages, every local minimum of the distance to a
-                                 planet or the Moon within PASSAGE_MAX_HILL Hill radii, in the
-                                 format of the encounters; None without it,
+                "moid_au":       with compute_moid, {body: MOID in AU at each output of the
+                                 particle, None where its orbit is not elliptical}; None without it,
                 "departed":      [bool] whether the object left the Earth's neighbourhood,
                 "impact":        None, or {"body", "time_days", "dist_au"} if the object hit a body,
             }},
@@ -2137,10 +2255,13 @@ def _integrateParticles(task, progress=None):
 
     n_hill = task.get("n_hill", 3.0)
 
-    # Passages are recorded within PASSAGE_MAX_HILL Hill radii of the planets and the Moon (the Sun has
-    #   no Hill sphere, and its passages are the perihelia)
-    track_passages = task.get("track_passages", False)
-    passage_limit = {b: PASSAGE_MAX_HILL*r for b, r in HILL_RADII_AU.items()}
+    # MOID with the planets at every output, from the heliocentric osculating orbits of the object and
+    #   the planets read at the output: the planets' rows are shared by all the particles, and each
+    #   particle's rows carry the index of their output
+    compute_moid = task.get("compute_moid", False)
+    moid_bodies = [b for b in MOID_BODIES if b in planet_names]
+    moid_planet_rows = []
+    moid_object_rows = {name: [] for name in particle_names}
 
     # Integrator. The object starts at the Earth's surface, a deep close encounter that the
     # fixed-step integrators do not handle: WHFast cannot resolve it at all, and TRACE resolves the
@@ -2316,7 +2437,6 @@ def _integrateParticles(task, progress=None):
             "escaped": None,
             "prev": {},
             "encounters": [],
-            "passages": [],
         }
 
     # Wall-clock time of the next progress report. The first one waits a full interval, so a short
@@ -2389,10 +2509,6 @@ def _integrateParticles(task, progress=None):
                         # or a fixed distance for the Sun, which has no Hill sphere
                         if d_h < _encounterThreshold(bname, n_hill):
                             st["encounters"].append((bname, t_h, d_h))
-
-                        # Every passage, close or not, for the figure
-                        if track_passages and (d_h < passage_limit.get(bname, -1.0)):
-                            st["passages"].append((bname, t_h, d_h))
 
                 st["prev"][bname] = (t_now, rel, rv)
 
@@ -2490,6 +2606,10 @@ def _integrateParticles(task, progress=None):
         if reverse_time:
             _reverseVelocities(sim)
 
+        if compute_moid:
+            k_moid = len(moid_planet_rows)
+            moid_planet_rows.append([_orbitTuple(ps[b].orbit(primary=ps["Sun"])) for b in moid_bodies])
+
         for name in particle_names:
 
             # Skip the particle if it is no longer in the simulation
@@ -2507,6 +2627,10 @@ def _integrateParticles(task, progress=None):
                 Omega=orb_elem.Omega, omega=orb_elem.omega, f=orb_elem.f)
 
             outputs[name].append([t_out, state_vect_hel, orb_ns, planet_dists])
+
+            if compute_moid:
+                orb_hel = orb_elem if reference_frame == "heliocentric" else ps[name].orbit(primary=ps["Sun"])
+                moid_object_rows[name].append((k_moid, _orbitTuple(orb_hel)))
 
         if reverse_time:
             _reverseVelocities(sim)
@@ -2534,8 +2658,8 @@ def _integrateParticles(task, progress=None):
                               for b in planet_names},
             "encounters": [_encounterRecord(b, d, time_sign*simTimeToDays(t))
                            for b, t, d in st["encounters"]],
-            "passages": ([_encounterRecord(b, d, time_sign*simTimeToDays(t)) for b, t, d in st["passages"]]
-                         if track_passages else None),
+            "moid_au": (_moidSeries(moid_planet_rows, moid_object_rows[name], moid_bodies)
+                        if compute_moid else None),
             "departed": st["departed"],
             "impact": st["impact"],
             "escaped": st["escaped"],
@@ -3715,8 +3839,8 @@ PLOT_SAMPLE_CLONES = 10
 
 
 def plotReboundOrbits(sim_outputs, sim_outputs_mc, encounters, file_path=None, dist_unit_multiplier=1.0,
-                      length_units="AU", horizon=None, n_hill=3.0, passages=None, clone_encounters=None,
-                      closest_au=None, closest_time_days=None):
+                      length_units="AU", horizon=None, n_hill=3.0, clone_encounters=None, closest_au=None,
+                      closest_time_days=None, moid=None):
     """ Figure of the evolution of the orbit: the nominal solution and the Monte Carlo clones.
 
     Panels: a, e, q; i, node, argument of perihelion; longitude of perihelion, the close approaches to
@@ -3724,9 +3848,10 @@ def plotReboundOrbits(sim_outputs, sim_outputs_mc, encounters, file_path=None, d
     predictabilityHorizon), or the heliocentric distance without clones.
 
     The approaches panel shows the nominal's encounters as discs drawn as their bodies (see
-    wmpl.Utils.PlanetStyle), its other passages as a line per body, the clones' encounters as faint
-    dots, and, for a body with none of these, its closest approach as a ring if within
-    PASSAGE_MAX_HILL. The Sun has no Hill sphere: its
+    wmpl.Utils.PlanetStyle), the clones' encounters as faint dots, the MOID with each body that comes
+    within APPROACH_MAX_HILL Hill radii (a line for the nominal, and the clones' 16-84% band for a body
+    that a sixth of the clones or more could encounter), and, for a body with none of these, its
+    closest approach as a ring if within APPROACH_MAX_HILL. The Sun has no Hill sphere: its
     distance is scaled so that its SUN_ENCOUNTER_AU gate falls on the n_hill line of the others. The
     distance to the Earth at the outputs is drawn too in runs shorter than two years, where it shows
     the departure; in longer runs the output sampling misses the approaches.
@@ -3749,11 +3874,10 @@ def plotReboundOrbits(sim_outputs, sim_outputs_mc, encounters, file_path=None, d
         length_units: [str] Name of that unit. Default "AU".
         horizon: [dict] Return of predictabilityHorizon, or None.
         n_hill: [float] Earth Hill radii of the departure and of the encounter threshold. Default 3.
-        passages: [list] Every passage of the nominal solution within PASSAGE_MAX_HILL Hill radii
-            ("passages" in the diagnostics of reboundSimulate), or None.
         clone_encounters: [dict] {clone name: encounters of that clone}, or None.
         closest_au: [dict] {body: closest approach of the nominal solution in AU}, or None.
         closest_time_days: [dict] {body: time of that closest approach in days}, or None.
+        moid: [dict] Return of moidSummary, or None.
 
     Return:
         (fig, axes): the figure and a dict of its axes by panel name.
@@ -3876,7 +4000,7 @@ def plotReboundOrbits(sim_outputs, sim_outputs_mc, encounters, file_path=None, d
     drawn = set()
 
     # In a short run the distance to the Earth at the outputs shows the departure; in a long one the
-    #   output sampling misses the approaches, which the passages below give exactly
+    #   output sampling misses the approaches, which the encounters below give exactly
     if not in_years:
         earth = nominal["earth"]
         ax.plot(t, np.where(earth > 0, earth, np.nan)/HILL_RADII_AU["Earth"], color="0.55", lw=0.6,
@@ -3897,13 +4021,41 @@ def plotReboundOrbits(sim_outputs, sim_outputs_mc, encounters, file_path=None, d
                 markeredgewidth=0, alpha=0.3, zorder=2, gid="clone_encounter:{:s}".format(body))
         drawn.add(body)
 
-    # Every passage of the nominal solution, as a thin line through them: one track per body,
-    #   which shows the approach passage by passage and does not read as the clones' scattered dots
-    for body in [b for b in PLANET_ORDER if plotted(b)]:
-        pas = [p for p in (passages or []) if p["body"] == body]
-        if pas:
-            ax.plot([p["time_days"]/t_scale for p in pas], [hillUnits(body, p["min_dist_au"]) for p in pas],
-                    ls="-", lw=0.5, color=planetColor(body), zorder=3, gid="passage:{:s}".format(body))
+    # MOID with each body, in Hill radii: the nominal's as a line, and the clones' 16-84% band where at
+    #   least 16% of them come within the encounter threshold at some time (an encounter is then
+    #   possible for them). Before the departure the heliocentric orbit carries the Earth's pull, as for
+    #   the elements. Bodies that never come within APPROACH_MAX_HILL Hill radii are left out.
+    moid_lines, moid_bands = set(), set()
+    if moid is not None:
+
+        def moidArray(values):
+            v = np.full(n, np.nan)
+            vals = np.array([np.nan if x is None else x for x in values[:n]], dtype=float)
+            v[:len(vals)] = vals
+            v[:k_dep] = np.nan
+            return v
+
+        for body in moid["bodies"]:
+            if body not in HILL_RADII_AU:
+                continue
+            hill = HILL_RADII_AU[body]
+            nom = moidArray(moid["nominal_au"][body])/hill
+            clones_p = (moid["clones_au"] or {}).get(body)
+            lo = hi = None
+            if clones_p is not None:
+                pct = list(moid["percentiles"])
+                lo, hi = moidArray(clones_p[pct.index(16)])/hill, moidArray(clones_p[pct.index(84)])/hill
+
+            series = [x for x in (nom, lo) if (x is not None) and np.any(np.isfinite(x))]
+            if (not series) or (np.nanmin(np.concatenate(series)) > APPROACH_MAX_HILL):
+                continue
+
+            if (lo is not None) and np.any(lo < n_hill):
+                ax.fill_between(t, lo, hi, color=planetColor(body), alpha=0.2, lw=0, zorder=1,
+                                gid="moid_band:{:s}".format(body))
+                moid_bands.add(body)
+            ax.plot(t, nom, color=planetColor(body), lw=0.9, zorder=3, gid="moid:{:s}".format(body))
+            moid_lines.add(body)
             drawn.add(body)
 
     # The nominal's encounters, drawn as their bodies: colour and a size that grows with the radius
@@ -3922,16 +4074,15 @@ def plotReboundOrbits(sim_outputs, sim_outputs_mc, encounters, file_path=None, d
         drawn.add(body)
         nominal_encountered.add(body)
 
-    # A body with none of the above (no passages recorded, e.g. a results file from an older version,
-    #   or none close enough) gets its closest approach of the run as a ring, if it is within
-    #   PASSAGE_MAX_HILL Hill radii: further out the body never mattered. The Sun's closest approach is
-    #   the perihelion, which the q panel shows already.
+    # A body with none of the above gets its closest approach of the run as a ring, if it is within
+    #   APPROACH_MAX_HILL Hill radii: further out the body never mattered. The Sun's closest approach
+    #   is the perihelion, which the q panel shows already.
     rings = set()
     for body, dist in (closest_au or {}).items():
         t_min = (closest_time_days or {}).get(body)
         if (body == "Sun") or (body not in HILL_RADII_AU) or (body in drawn) or (dist is None) or (t_min is None):
             continue
-        if hillUnits(body, dist) > PASSAGE_MAX_HILL:
+        if hillUnits(body, dist) > APPROACH_MAX_HILL:
             continue
         ax.plot(t_min/t_scale, hillUnits(body, dist), marker="o", ls="none", markersize=6,
                 markerfacecolor="none", markeredgecolor=planetColor(body), markeredgewidth=1.2, zorder=4,
@@ -3941,6 +4092,10 @@ def plotReboundOrbits(sim_outputs, sim_outputs_mc, encounters, file_path=None, d
 
     ax.set_yscale("log")
     ax.set_ylabel("distance [Hill radii]")
+
+    # Where the orbits cross the MOID dives towards zero; a thousandth of a Hill radius is deep enough
+    y_lo, y_hi = ax.get_ylim()
+    ax.set_ylim(max(y_lo, MOID_PLOT_MIN_HILL), y_hi)
 
     # The legend: one entry per body in its colour, then one per kind of marker, in black (grey would
     #   read as Mercury or the Moon)
@@ -3954,11 +4109,13 @@ def plotReboundOrbits(sim_outputs, sim_outputs_mc, encounters, file_path=None, d
     if nominal_encountered:
         approach_handles.append(Line2D([], [], marker="o", ls="none", color="k", markersize=7,
                                        label="encounter (nominal)"))
-    if passages:
-        approach_handles.append(Line2D([], [], ls="-", lw=0.5, color="k", label="passage (nominal)"))
     if clone_points:
         approach_handles.append(Line2D([], [], marker="o", ls="none", color="k", markersize=2.5,
                                        markeredgewidth=0, alpha=0.5, label="encounter (clones)"))
+    if moid_lines:
+        approach_handles.append(Line2D([], [], color="k", lw=0.9, label="MOID (nominal)"))
+    if moid_bands:
+        approach_handles.append(Patch(facecolor="k", alpha=0.2, lw=0, label="MOID 16-84% (clones)"))
     if rings:
         approach_handles.append(Line2D([], [], marker="o", ls="none", markersize=6, markerfacecolor="none",
                                        markeredgecolor="k", markeredgewidth=1.2, label="never closer"))
@@ -4021,7 +4178,7 @@ def reboundSimulate(
         reference_frame="heliocentric", ephem_source="local", n_cpu=None,
         show_progress=True, return_diagnostics=False, random_seed=None, beta=None, integrator="ias15",
         dt_days=None, compute_megno=False, checkpoint_path=None, sun_j2=True, gr="gr_full",
-        verbose=False, state_vect_realizations=None):
+        compute_moid=True, verbose=False, state_vect_realizations=None):
     """ Takes an state vector (or a Trajectory object), runs REBOUND and produces orbital elements for the 
     object at the end of the simulation or at the specified time.
 
@@ -4093,6 +4250,10 @@ def reboundSimulate(
             checkpoint (or drawn and stored in a new one), so the Monte Carlo realizations are the
             same as before the interruption. The file is left in place at the end: delete it once
             the results are saved. None (default) saves nothing. See readReboundCheckpoint.
+        compute_moid: [bool] Compute the MOID with each of MOID_BODIES at every output, for the nominal
+            solution and every clone ("moid_au" in their diagnostics, see wmpl.Utils.MOID). It costs
+            ~40 microseconds per output and body, ~1 s per orbit with 3000 outputs: measured 4% of a
+            300-year run, less for longer spans with the same outputs. Default True.
         verbose: [bool] If True, print out the progress of the simulation.
         state_vect_realizations: [list] Monte Carlo realizations of state_vect at julian_date, to integrate
             instead of the ones drawn from traj (see sampleStateVectors), e.g. the realizations run back through
@@ -4249,6 +4410,7 @@ def reboundSimulate(
             "earth_spin_axis": earth_spin_axis,
             "sun_j2": sun_j2,
             "gr": gr,
+            "compute_moid": compute_moid,
         }
 
     if verbose:
@@ -4289,15 +4451,12 @@ def reboundSimulate(
                 print("Saving each integrated orbit to the checkpoint {:s}".format(checkpoint_path))
 
     # Nominal solution, integrated in its own simulation (in the main process)
-    #   It also records every passage by a planet, for the figure (see PASSAGE_MAX_HILL)
     if obj_name in checkpoint_records:
         nominal_result = checkpoint_records[obj_name]
 
     else:
         progress_line = _ProgressLine(show_progress)
-        nominal_task = _make_task([state_vect_rot], [obj_name])
-        nominal_task["track_passages"] = True
-        nominal_result = _integrateParticles(nominal_task,
+        nominal_result = _integrateParticles(_make_task([state_vect_rot], [obj_name]),
                                              progress=_spanProgress(progress_line, "Nominal orbit"))
         progress_line.end()
 
@@ -4574,6 +4733,10 @@ if __name__ == "__main__":
     parser.add_argument("--parent_top", type=int, default=None, metavar="N",
                         help="Use only the first N bodies of the --parent_bodies file.")
 
+    parser.add_argument("--no_moid", action="store_true",
+                        help="Do not compute the MOID (minimum orbit intersection distance) with the planets "
+                        "at every output, which is drawn in the figure and saved to the JSON by default.")
+
     parser.add_argument("--verbose", action="store_true", help="Print out the progress of the simulation.")
 
     args = parser.parse_args()
@@ -4779,7 +4942,7 @@ if __name__ == "__main__":
             ephem_source=ephem_source, n_cpu=n_cpu, return_diagnostics=True,
             random_seed=random_seed, beta=beta, integrator=args.integrator, dt_days=dt_days,
             compute_megno=args.compute_megno, checkpoint_path=checkpoint_path, sun_j2=not args.no_sun_j2,
-            gr=args.gr, verbose=args.verbose
+            gr=args.gr, compute_moid=not args.no_moid, verbose=args.verbose
             )
 
     t_run_start = time.time()
@@ -4971,6 +5134,10 @@ if __name__ == "__main__":
     # Every encounter is listed, including repeated ones with the same body, in the order they
     # happened during the integration (for a backward integration, the latest epoch first).
     nominal_diag = sim_diagnostics.get(traj.traj_id, {})
+
+    # MOID of the nominal solution and percentiles of the clones' (see moidSummary)
+    moid = moidSummary(nominal_diag, clone_diag)
+    moid_k_dep = findEarthDepartureIndex(sim_outputs, n_hill=n_hill) or 0
     encounters = sorted(nominal_diag.get("encounters", []), key=lambda e: abs(e["time_days"]))
 
 
@@ -5227,6 +5394,12 @@ if __name__ == "__main__":
         for line in _predictabilityReportLines(horizon, achieved_days):
             print("  " + line)
 
+    if moid is not None:
+        print("-" * 78)
+        for line in _moidReportLines(moid, [simTimeToDays(row[0]) for row in sim_outputs], n_hill,
+                                     k_dep=moid_k_dep):
+            print("  " + line)
+
     if megno is not None:
         print("-" * 78)
         for line in _megnoReportLines(megno):
@@ -5398,6 +5571,10 @@ if __name__ == "__main__":
         if horizon is not None:
             f.write("\n" + "\n".join(_predictabilityReportLines(horizon, achieved_days)) + "\n")
 
+        if moid is not None:
+            f.write("\n" + "\n".join(_moidReportLines(moid, [simTimeToDays(row[0]) for row in sim_outputs],
+                                                         n_hill, k_dep=moid_k_dep)) + "\n")
+
         if megno is not None:
             f.write("\n" + "\n".join(_megnoReportLines(megno)) + "\n")
 
@@ -5502,10 +5679,10 @@ if __name__ == "__main__":
     # Evolution of the orbit, the clones as percentile bands (see plotReboundOrbits)
     plotReboundOrbits(sim_outputs, sim_outputs_mc, encounters, file_path=plot_png_path,
                       dist_unit_multiplier=dist_unit_multiplier, length_units=a_units, horizon=horizon,
-                      n_hill=n_hill, passages=nominal_diag.get("passages"),
+                      n_hill=n_hill,
                       clone_encounters={name: diag.get("encounters", []) for name, diag in clone_diag.items()},
                       closest_au=nominal_diag.get("min_dist_au"),
-                      closest_time_days=nominal_diag.get("min_time_days"))
+                      closest_time_days=nominal_diag.get("min_time_days"), moid=moid)
 
     # MEGNO evolution, in its own figure
     megno_png_path = None
@@ -5594,9 +5771,6 @@ if __name__ == "__main__":
         #   encounter minima were refined between steps, only the deepest approach per body was kept.
         #   The Sun has no Hill sphere, so its "hill_radius_au" and "n_hill" are None.
         "encounters": encounters,
-        # Every passage of the nominal solution by a planet or the Moon within PASSAGE_MAX_HILL Hill
-        #   radii, encounters included, ordered by time, in the same format
-        "passages": nominal_diag.get("passages"),
         "closest_approaches_au": nominal_diag.get("min_dist_au"),
         "closest_approach_times_days": nominal_diag.get("min_time_days"),
         "impact": impact,
@@ -5624,6 +5798,7 @@ if __name__ == "__main__":
         "energy_rel_drift": nominal_diag.get("energy_rel_drift"),
         "divergence": lyap,
         "predictability": horizon,
+        "moid": moid,
         "nominal": _elementSeries(sim_outputs),
         "monte_carlo": {name: _elementSeries(rows) for name, rows in sim_outputs_mc.items()},
     }

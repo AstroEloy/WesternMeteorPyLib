@@ -1006,39 +1006,33 @@ def testEncountersAreInHillRadii(reb, agg):
     assert {"Sun", "Earth", "Moon", "Jupiter", "encounter (nominal)"} <= set(labels)
 
 
-def testPassagesCloneEncountersAndClosestApproaches(reb, agg):
-    """ The nominal's passages are small dots per body, the clones' encounters one faint series per
-    body, and a body with neither gets its closest approach as a ring. """
+def testCloneEncountersAndClosestApproaches(reb, agg):
+    """ The clones' encounters are one faint series per body, and a body with neither these nor a nominal
+    encounter gets its closest approach as a ring, only within APPROACH_MAX_HILL Hill radii. """
 
     nominal, clones = _plotOutputs(n_clones=25)
-    passages = [{"body": "Earth", "min_dist_au": d, "time_days": -365.25*y}
-                for y, d in ((10, 0.3), (20, 0.1), (30, 0.01))] + \
-               [{"body": "Jupiter", "min_dist_au": 3.0, "time_days": -365.25*50}]
     clone_encounters = {"obj_MC_0": [{"body": "Mars", "min_dist_au": 0.01, "time_days": -365.25*40}],
                         "obj_MC_1": [{"body": "Mars", "min_dist_au": 0.02, "time_days": -365.25*45},
                                      {"body": "Earth", "min_dist_au": 0.02, "time_days": -365.25*5}]}
-    closest_au = {"Earth": 0.01, "Jupiter": 3.0, "Mars": 0.5, "Venus": 0.4, "Sun": 0.9}
+    closest_au = {"Earth": 0.01, "Jupiter": 3.0, "Mars": 0.5, "Venus": 0.4, "Mercury": 0.6, "Sun": 0.9}
     closest_time = {"Earth": -365.25*30, "Jupiter": -365.25*50, "Mars": -365.25*80, "Venus": -365.25*90,
-                    "Sun": -365.25*20}
-    _, axes = reb.plotReboundOrbits(nominal, clones, [], passages=passages,
-                                    clone_encounters=clone_encounters, closest_au=closest_au,
-                                    closest_time_days=closest_time)
+                    "Mercury": -365.25*60, "Sun": -365.25*20}
+    _, axes = reb.plotReboundOrbits(nominal, clones, [], clone_encounters=clone_encounters,
+                                    closest_au=closest_au, closest_time_days=closest_time)
     ax = axes["encounters"]
-
-    dots = _byGid(ax, "passage:")
-    assert set(dots) == {"Earth", "Jupiter"}
-    assert len(dots["Earth"].get_xdata()) == 3
-    assert dots["Earth"].get_ydata() == pytest.approx(np.array([0.3, 0.1, 0.01])/reb.HILL_RADII_AU["Earth"])
 
     faint = _byGid(ax, "clone_encounter:")
     assert set(faint) == {"Mars", "Earth"} and len(faint["Mars"].get_xdata()) == 2
 
-    # Mars has clone encounters and Earth and Jupiter passages: only Venus is left for a ring, and
-    #   the Sun never gets one (its closest approach is the perihelion)
-    assert set(_byGid(ax, "closest:")) == {"Venus"}
+    # Mars and the Earth have clone encounters; Mercury is beyond APPROACH_MAX_HILL (400 Hill radii);
+    #   the Sun never gets a ring (its closest approach is the perihelion)
+    rings = _byGid(ax, "closest:")
+    assert set(rings) == {"Venus", "Jupiter"}
+    assert rings["Jupiter"].get_ydata()[0] == pytest.approx(3.0/reb.HILL_RADII_AU["Jupiter"])
 
     labels = [text.get_text() for text in ax.get_legend().get_texts()]
-    assert {"passage (nominal)", "encounter (clones)", "never closer", "Venus", "Mars"} <= set(labels)
+    assert {"encounter (clones)", "never closer", "Venus", "Mars"} <= set(labels)
+    assert "Mercury" not in labels
 
 
 def testTheEarthDistanceIsDrawnOnlyInShortRuns(reb, agg):
@@ -1075,3 +1069,87 @@ def testEncountersAreDrawnAsTheirBodies(reb, agg):
         assert line.get_markersize() == pytest.approx(planetMarkerSize(body))
         assert to_hex(line.get_markeredgecolor()) == "#000000"
     assert discs["Luna"].get_zorder() > discs["Earth"].get_zorder() > discs["Jupiter"].get_zorder()
+
+
+### MOID with the planets ###
+
+def testMoidSeriesMapsEachOutputToItsPlanets(reb):
+    """ Each output of the particle is paired with the planets' orbits of the same output, and a
+    hyperbolic orbit gives None. """
+
+    # Two outputs; the planet's circular orbit grows from 1.0 to 1.2 AU
+    planet_rows = [[(1.0, 0.0, 0.0, 0.0, 0.0)], [(1.2, 0.0, 0.0, 0.0, 0.0)]]
+    object_rows = [(1, (1.5, 0.0, 0.0, 0.0, 0.0)), (0, (2.0, 1.5, 0.0, 0.0, 0.0))]
+    out = reb._moidSeries(planet_rows, object_rows, ["Earth"])
+    assert out["Earth"][0] == pytest.approx(0.3, abs=1e-12)
+    assert out["Earth"][1] is None
+    assert reb._moidSeries(planet_rows, [], ["Earth"]) == {"Earth": []}
+
+
+def testMoidSummaryPercentilesOverTheClones(reb):
+
+    nominal = {"moid_au": {"Earth": [0.1, 0.2, 0.3]}}
+    clones = {"c{:d}".format(k): {"moid_au": {"Earth": [0.01*k, 0.02*k, 0.03*k]}} for k in range(1, 101)}
+    clones["short"] = {"moid_au": {"Earth": [5.0]}}   # ended early: counts only at the first output
+    clones["none"] = {"moid_au": None}                # MOID not computed for this one
+
+    summary = reb.moidSummary(nominal, clones)
+    assert summary["bodies"] == ["Earth"] and summary["n_clones"] == 101
+    p50 = summary["clones_au"]["Earth"][summary["percentiles"].index(50)]
+    assert p50[2] == pytest.approx(np.percentile(0.03*np.arange(1, 101), 50))
+    assert p50[0] == pytest.approx(np.percentile(np.append(0.01*np.arange(1, 101), 5.0), 50))
+
+    assert reb.moidSummary({"moid_au": None}, clones) is None
+    assert reb.moidSummary(nominal, {})["clones_au"] is None
+
+
+def testMoidReportGivesTheMinimumAndTheClonesInside(reb):
+
+    hill = reb.HILL_RADII_AU["Earth"]
+    moid = {"bodies": ["Earth", "Mercury"], "percentiles": [2.5, 16, 50, 84, 97.5], "n_clones": 50,
+            "nominal_au": {"Earth": [0.5, 0.1, 0.02, 0.05], "Mercury": [0.5]*4},
+            "clones_au": {"Earth": [[0.0]*3 + [x*hill] for x in (0.5, 1.0, 2.0, 4.0, 9.0)],
+                          "Mercury": [[0.5]*4]*5}}
+    lines = reb._moidReportLines(moid, [0.0, -365.25*10, -365.25*20, -365.25*30], 3.0, k_dep=1)
+    assert len(lines) == 2, "Mercury, 340 Hill radii away, is left out"
+    assert "0.02000 AU" in lines[1] and "t = -20 years" in lines[1]
+    assert "within 3 Hill radii at the end: > 50%" in lines[1]
+
+
+def _moidSummaryFor(n, bodies_au, clones=True):
+    """ A moidSummary-like dict with constant MOIDs over n outputs: {body: (nominal, p16, p84)} in AU. """
+    pct = [2.5, 16, 50, 84, 97.5]
+    return {"bodies": list(bodies_au), "percentiles": pct, "n_clones": 30 if clones else 0,
+            "nominal_au": {b: [v[0]]*n for b, v in bodies_au.items()},
+            "clones_au": {b: [[v[1]]*n, [v[1]]*n, [v[0]]*n, [v[2]]*n, [v[2]]*n] for b, v in bodies_au.items()}
+            if clones else None}
+
+
+def testMoidLinesAndBandsInTheApproachesPanel(reb, agg):
+    """ A line per body within APPROACH_MAX_HILL; the clones' band only where 16% of them come within
+    the encounter threshold; no ring for a body with a MOID line. """
+
+    nominal, clones = _plotOutputs(n_clones=25)
+    hill = reb.HILL_RADII_AU
+    moid = _moidSummaryFor(len(nominal), {
+        "Earth": (0.5*hill["Earth"], 0.2*hill["Earth"], 8*hill["Earth"]),     # band: p16 inside 3
+        "Jupiter": (10*hill["Jupiter"], 6*hill["Jupiter"], 20*hill["Jupiter"]),  # line only
+        "Mercury": (500*hill["Mercury"], 400*hill["Mercury"], 600*hill["Mercury"])})  # left out
+    _, axes = reb.plotReboundOrbits(nominal, clones, [], moid=moid, closest_au={"Jupiter": 3.0},
+                                    closest_time_days={"Jupiter": -365.25*10})
+    ax = axes["encounters"]
+
+    lines = _byGid(ax, "moid:")
+    assert set(lines) == {"Earth", "Jupiter"}
+    y = np.array(lines["Earth"].get_ydata(), dtype=float)
+    assert np.all(np.isnan(y[:2])), "nothing before the departure"
+    assert y[-1] == pytest.approx(0.5)
+
+    bands = {c.get_gid() for c in ax.collections if (c.get_gid() or "").startswith("moid_band:")}
+    assert bands == {"moid_band:Earth"}
+    assert not _byGid(ax, "closest:"), "Jupiter has its MOID line, so no ring"
+
+    labels = [text.get_text() for text in ax.get_legend().get_texts()]
+    assert {"MOID (nominal)", "MOID 16-84% (clones)", "Earth", "Jupiter"} <= set(labels)
+    assert "Mercury" not in labels
+    assert ax.get_ylim()[0] >= reb.MOID_PLOT_MIN_HILL
