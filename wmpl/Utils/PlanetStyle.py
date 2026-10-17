@@ -38,7 +38,7 @@ PLANET_RADII_KM = {
 }
 
 # Thin outline that keeps the bodies visible against the background: black on a light one, for the
-#   pale bodies (Moon, Saturn, Uranus, Venus), and white on a dark one, for the dark bodies (Neptune,
+#   pale bodies (Sun, Moon, Saturn, Uranus), and white on a dark one, for the dark bodies (Neptune,
 #   Earth, Mars)
 PLANET_EDGE_COLOR = "black"
 PLANET_EDGE_COLOR_DARK = "white"
