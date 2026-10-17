@@ -9,7 +9,7 @@ from __future__ import print_function, division, absolute_import
 
 # Colour of each body, close to its appearance and with distinct hues so the bodies tell apart: yellow
 #   Sun, grey Mercury, amber Venus, blue Earth, light grey Moon, red Mars, burnt orange Jupiter, sand
-#   Saturn, cyan Uranus and indigo Neptune
+#   Saturn, cyan Uranus and violet Neptune
 PLANET_COLORS = {
     "Sun": "#f0dc5a",
     "Mercury": "#7f7f7f",
@@ -20,7 +20,7 @@ PLANET_COLORS = {
     "Jupiter": "#c26a2e",
     "Saturn": "#d8b98a",
     "Uranus": "#4fd0d6",
-    "Neptune": "#3a3fd0",
+    "Neptune": "#6a48d8",
 }
 
 # Mean radius in km (IAU)
