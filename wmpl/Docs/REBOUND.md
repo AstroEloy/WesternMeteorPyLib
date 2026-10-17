@@ -303,8 +303,8 @@ and then refined *within* the step. Both steps matter:
 
 The nominal solution also records every passage by a planet or the Moon out to 100 Hill radii
 (`PASSAGE_MAX_HILL`), encounters included, so the figure can show how close the object came at each
-passage and not only inside the threshold. On the plot every encounter is a star in the colour of
-the body it passed (see [The figure](#the-figure)).
+passage and not only inside the threshold. On the plot every encounter is a disc drawn as the body it
+passed (see [The figure](#the-figure)).
 
 The first close encounter going backwards is almost always the Earth itself — that is the meteoroid
 arriving. What matters is what came before it.
@@ -470,7 +470,10 @@ options.
   Hill radius of the body, so that one dotted line is the encounter threshold (3 Hill radii by default)
   for all of them, and a Jupiter encounter at 0.9 AU (2.5 Hill radii) reads as deep as an Earth one at
   0.025 AU. It shows:
-  - the nominal's **encounters** as stars in the body's colour;
+  - the nominal's **encounters** as discs drawn as their bodies: the body's colour (yellow Sun, blue
+    Earth, grey Moon, red Mars, burnt orange Jupiter, ...) with a thin black outline, sized as
+    radius^0.25 so the order of the real sizes is kept without Jupiter covering the panel (Jupiter 1.8
+    times the Earth, the Moon 0.72 times), the smaller bodies on top;
   - the nominal's other **passages**, out to 100 Hill radii, as a thin line through them in the body's
     colour, one track per body, so the approach to a planet can be followed passage by passage;
   - the **clones' encounters** as faint dots, which show when and with which planets the ensemble meets,
@@ -482,7 +485,9 @@ options.
   The Sun has no Hill sphere: its distance is scaled so that its 0.1 AU gate falls on the same line.
   In runs shorter than two years the distance to the Earth at the outputs is drawn too, as it shows the
   departure; in longer ones the output sampling misses the approaches, which the passages give
-  exactly.
+  exactly. The palette and the sizes live in `wmpl.Utils.PlanetStyle` and are shared with the solver's
+  `_orbit_top`/`_orbit_side` plots, where the outline is black on the light background and white on
+  the dark one.
 
 The JSON keys, at the top level:
 
