@@ -225,6 +225,96 @@ python -m wmpl.Utils.ParentBodySearch traj.pickle -d DSH DN DD
 - **Integrating the candidates.** The JSON can be given to `wmpl.Rebound.REBOUND --parent_bodies`,
   which integrates the bodies alongside the meteoroid and its clones and follows the D criteria
   between them over time. See [REBOUND, parent bodies](REBOUND.md#parent-bodies).
+- **Is a match more than chance? (`--chance_neo`)** A small D value means little on its own, because
+  NEOs are common in some parts of orbit space. `--chance_neo` takes every asteroid of the catalogue
+  and answers: given this meteoroid's orbit, how many NEOs at least as large (H no fainter) would lie
+  at least as close by chance, and what is the probability of at least one? That probability is the
+  p-value of the match. The test runs for every criterion on the orbital elements given to `-d`.
+
+  ```
+  python -m wmpl.Utils.ParentBodySearch traj.pickle -d DSH RHO2 --chance_neo
+  ```
+
+  For each criterion it prints two tables: the top N by the ranking criterion, as in the main table,
+  and the N most significant asteroids of the whole catalogue, ranked by p. A large asteroid at a
+  modest D can be far more significant than a small one at a tiny D, and only the second table shows
+  it.
+
+  - **The population.** The background is the debiased NEO population of
+    [Granvik et al. (2018)](https://doi.org/10.1016/j.icarus.2018.04.018): 802 000 synthetic NEOs
+    with 17 < H < 25, q < 1.3 AU and a < 4.2 AU, at the true numbers the model predicts. It is not
+    the known population and is not distributed with wmpl. The first use downloads it (28 MB) from
+    the authors' page into `wmpl/share`, or into `~/.cache/wmpl` if `share` cannot be written, and
+    checks its SHA-256. On a machine without network access, copy `Granvik+_2018_Icarus.dat.gz` into
+    either place. It is published under CC BY 4.0, so cite the paper.
+  - **The test.** The meteoroid's orbit is kept fixed and compared with every synthetic orbit, of which
+    k are at least as close as the candidate. Under the null hypothesis the candidate is one more
+    background orbit, so p1 = (k + 1)/(802 000 + 1) is exact, the usual Monte Carlo p-value, and it is
+    never 0. With N(H ≤ H_cand) the number of NEOs at least as large, λ = N(H ≤ H_cand)·p1 is the
+    number of such NEOs expected that close by chance, and p = 1 − e^−λ.
+    `wmpl.Utils.DebiasedNEOPopulation.chanceAssociation` exposes the test directly.
+  - **N(H ≤ H_cand)** adds the known NEOs with H ≤ 17 (the model has none that bright, and the known
+    population is nearly complete there) to the synthetic ones with 17 < H ≤ H_cand. The two join
+    without a step: at H = 17.5 the sum is 726, against 723 known NEOs.
+  - **Which p to quote.** `p` is right for a body named before the search, such as one proposed in a
+    paper. A body the search found, as the best of tens of thousands of every size, needs
+    `p_global`: the probability that some background NEO, of any size down to H = 25, reaches so low
+    a p by chance. With the background ranked by size and the orbit independent of size, it is
+    λ_global = Σ_n min(1, λ/n), about 14·λ for the 802 448 background NEOs. Measured on the synthetic
+    population itself over 200 Earth-crossing orbits, the true count is 0.6 to 1.0 times λ_global,
+    so it is conservative.
+  - **Reading it.** `sigma` is the two-sided Gaussian equivalent of `p_global`, the convention of
+    physics:
+
+    | sigma | p_global | one in | reading |
+    | ---: | ---: | ---: | :--- |
+    | < 2 | > 0.046 | fewer than 22 | consistent with chance |
+    | 2 | 0.046 | 22 | a hint, not conclusive |
+    | 3 | 0.0027 | 370 | evidence |
+    | 5 | 6×10⁻⁷ | 1.7 million | discovery |
+
+    A match reaching 2 or 3 sigma is flagged in the tables. Below 1 sigma the number measures
+    nothing and is printed `<1`. From 1 up it has one decimal, which is all it supports:
+    `p_global` is conservative by up to 1.6 times, which moves 3.5 sigma by 0.1.
+  - **Probabilities** are printed as plain decimals with 3 significant digits above 0.001 and in
+    scientific notation below it. What rounds to certainty is printed `>0.999`.
+  - **Limits.** When no synthetic orbit is as close as the body (`closer` = 0), the population cannot
+    resolve how unusual it is: p is at most, and sigma at least, the value shown, printed `<=` and
+    `>=`. With 802 000 orbits a body can reach about 3.5 sigma this way. Saved files carry it as
+    `is_limit`.
+  - **The summary.** The output closes with one for the criterion the bodies were ranked by: how many
+    bodies could be tested and how many could not (H > 25, or no H), the most significant body, a
+    verdict, how many of the closest bodies could not be tested, and the most significant body under
+    each other criterion as a check. The verdict is one of: no body is distinguishable from chance
+    (none reaches 2 sigma); a hint (some reach 2 sigma, none 3); or evidence (some reach 3 sigma),
+    listing them with their odds. With several criteria, choose one before looking: the smallest p
+    over several criteria is not itself a p-value.
+  - **Examples.** Phaethon against the Geminids: p_global at most 4.2×10⁻⁴ (1 in 2 400 or rarer), at
+    least 3.5 sigma with D_SH and with rho_2, a limit. Nothing else comes near 2 sigma. Winchcombe:
+    the most significant body is (433) Eros at D_SH = 0.51, with p = 0.16 and p_global = 0.91, so there
+    is no association to claim.
+  - **Why not random pairs.** Drawing pairs of synthetic NEOs until one is as close as the observed
+    pair, as earlier works do, treats the meteoroid as a typical NEO. It is not one: a meteoroid has
+    to hit the Earth, which favours the dense low-inclination Earth-crossing region. Measured with
+    D_SH, the fraction of the population within 0.1 of the Winchcombe orbit is 2.6 times the
+    random-pair fraction. For a Geminid-like orbit it is 0.06 times. Random pairs would therefore
+    overstate the significance of a typical fireball match by 2 to 3 times, and understate it 16
+    times in a sparse region.
+  - **Limits.** Without an absolute magnitude there is no p-value: this covers comets, meteorites,
+    and asteroids fainter than H = 25, which is most of the closest matches to a meteorite-dropping
+    fireball. A meteoroid outside q < 1.3 AU and a < 4.2 AU gets no p-value either, because the
+    model is empty there rather than unknown; near that edge the p-value is biased low. The orbital
+    distribution is taken as independent of H. The meteoroid's orbit is taken as exact. With
+    802 000 synthetic orbits, p1 is never below 1/802 001. The criteria on the radiant are skipped,
+    since a synthetic orbit has a radiant only where it comes close to the Earth's. The MOID is
+    accepted, but it measures crossing rather than similarity, and crossing orbits are common: 28 600
+    of the 802 000 synthetic orbits come within 0.009 AU of the Winchcombe orbit. It also takes
+    about half a minute against the population.
+  - **Saving.** Without `--save` the values are only printed. The only files written are the
+    population, downloaded once, and the bar plot that several criteria save by default.
+    `--save` adds `chance_neo_<criterion>_*` columns to the CSV and a `chance_neo` entry per match to
+    the JSON. The ranking by p goes into the JSON as `most_significant`, or into
+    `<name>_chance_neo.csv` beside the CSV.
 
 ---
 

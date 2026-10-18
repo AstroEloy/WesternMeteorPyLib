@@ -14,6 +14,12 @@ body's, in AU (wmpl.Utils.MOID), parabolic and hyperbolic comets included. It sa
 orbits come in space, not how similar they are, so two unrelated orbits can cross; it is best given
 with a D criterion, -d DSH MOID to rank by similarity and check the distance, or -d MOID DSH the other
 way round. It is evaluated over the whole catalogue in one call (~2 s for the ~46 000 bodies).
+
+--chance_neo (chanceNEO) gives, for each asteroid, the probability that a NEO at least as large lies at
+least as close to the orbit by chance, the p-value of the match, for the body alone and corrected for
+having searched bodies of every size, against the debiased NEO population of Granvik et al. (2018),
+which is downloaded on first use, and ranks the whole catalogue by it (rankByChance). See
+wmpl.Utils.DebiasedNEOPopulation.
 """
 
 # The MIT License
@@ -43,6 +49,7 @@ from __future__ import print_function, division, absolute_import, unicode_litera
 import os
 import sys
 import csv
+import math
 import json
 import datetime
 import numpy as np
@@ -488,6 +495,380 @@ def findParentBodies(q, e, incl, peri, node, d_crit='dsh', top_n=10, meteorites=
         for m in search['matches']]
 
 
+def chanceNEO(search, q, e, incl, peri, node, population=None, download=True, confidence=None):
+    """ For each match of a search, the probability that a NEO at least as large lies at least as close
+        to the given orbit by chance, for every criterion of the search on the orbital elements: for
+        the body alone, and corrected for having searched bodies of every size.
+
+        The synthetic NEOs of the debiased population of Granvik et al. (2018) are compared with the
+        given orbit, and the known NEOs of the catalogues count the bodies brighter than the model
+        reaches. See wmpl.Utils.DebiasedNEOPopulation for the test and what it assumes. The criteria
+        on the radiant are skipped: they would need the radiant of every synthetic NEO, which exists
+        only where its orbit comes close to the Earth's.
+
+        To rank the whole catalogue by significance, give it a search with top_n=-1 (rankByChance).
+
+    Arguments:
+        search: [dict] Return of searchParentBodies.
+        q, e, incl, peri, node: [float] The orbit given to searchParentBodies, the angles in radians.
+
+    Keyword arguments:
+        population: [dict] Return of wmpl.Utils.DebiasedNEOPopulation.loadDebiasedNEOPopulation. It is
+            loaded, and downloaded on first use, if None.
+        download: [bool] Download the population if it is not there. If False, raise instead.
+        confidence: [float] Confidence of the Poisson upper limits, 0.95 by default.
+
+    Return:
+        [dict] 'model', 'reference', 'license', 'file_path' and 'n_population' of the population, and
+            'n_background', the NEOs to its faint end, and 'h_max', the absolute magnitude it reaches;
+            'confidence'; 'meteor_in_model' and
+            'meteor_outside_reason'; 'labels', the criteria evaluated, in the order of the search,
+            and 'skipped', those on the radiant; and 'results', for each label a list with a
+            dictionary per match, as returned by wmpl.Utils.DebiasedNEOPopulation.chanceAssociation.
+    """
+
+    from wmpl.Utils import DebiasedNEOPopulation as dnp
+
+    if confidence is None:
+        confidence = dnp.CHANCE_CONFIDENCE
+
+    if population is None:
+        population = dnp.loadDebiasedNEOPopulation(download=download)
+
+    model = population['model']
+
+    # The known NEOs, for the bodies brighter than the model reaches
+    known_h_mags = np.array([body[6] for body in asteroids_elements], dtype=float)
+    known_h_mags = known_h_mags[known_h_mags >= 0]
+
+    meteor_orbit = (q, e, incl, node, peri)
+    inside, reason = dnp.isInModelRegion(q, e, model)
+
+    results = {}
+    labels = []
+    skipped = []
+
+    for c, (key, label) in enumerate(zip(search['keys'], search['labels'])):
+
+        if lookupCriterion(key)[3] != 'elements':
+            skipped.append(label)
+            continue
+
+        candidates = [(m['d_values'][c], m['h_mag']) for m in search['matches']]
+
+        results[label] = dnp.chanceAssociation(meteor_orbit, candidates, key, population, known_h_mags,
+            confidence=confidence)
+        labels.append(label)
+
+    return {'model': model['name'], 'reference': model['reference'], 'license': model['license'],
+        'file_path': population['file_path'], 'n_population': len(population['q']),
+        'n_background': sum(dnp.countAtLeastAsLarge(model['h_max'], population, known_h_mags)),
+        'h_max': model['h_max'],
+        'confidence': confidence, 'meteor_in_model': inside, 'meteor_outside_reason': reason,
+        'labels': labels, 'skipped': skipped, 'results': results}
+
+
+def firstMatches(search, chance, top_n):
+    """ The first top_n matches of a search and of its chanceNEO, or all of them if top_n is -1, so
+        that one search of the whole catalogue serves both the table of the closest bodies and the
+        ranking by significance. """
+
+    if top_n == -1:
+        return search, chance
+
+    search = dict(search, matches=search['matches'][:top_n])
+
+    if chance is not None:
+        chance = dict(chance, results=dict((label, results[:top_n])
+            for label, results in chance['results'].items()))
+
+    return search, chance
+
+
+def rankByChance(search, chance, label, top_n=10):
+    """ The matches with a p-value under one criterion, the most significant first.
+
+    Arguments:
+        search: [dict] Return of searchParentBodies, best with top_n=-1 to rank the whole catalogue.
+        chance: [dict] Return of chanceNEO for it.
+        label: [str] Label of the criterion, one of chance['labels'].
+
+    Keyword arguments:
+        top_n: [int] How many to return, -1 for all.
+
+    Return:
+        [list] (match, its criterion value, result of chanceAssociation) tuples, by ascending p-value
+            and, for equal ones, by the criterion.
+    """
+
+    c = search['labels'].index(label)
+
+    ranked = [(m, m['d_values'][c], r) for m, r in zip(search['matches'], chance['results'][label])
+        if r['p_value'] is not None]
+
+    ranked.sort(key=lambda entry: (entry[2]['p_value'], entry[1]))
+
+    return ranked if top_n == -1 else ranked[:top_n]
+
+
+# The significance levels the output flags, in Gaussian sigma: 2 sigma is a hint, 3 sigma is the usual
+#   bar for evidence in physics
+SIGMA_HINT = 2.0
+SIGMA_EVIDENCE = 3.0
+
+
+def formatProbability(p_value, limit=False):
+    """ A probability for the tables: plain decimals with 3 significant digits above 0.001, scientific
+        notation below it, and '>0.999' for what rounds to certainty, which would otherwise be printed
+        as 1.00. A limit (no synthetic orbit is as close) is prefixed with '<=': the population cannot
+        resolve it.
+    """
+
+    if p_value >= 0.9995:
+        text = ">0.999"
+
+    elif p_value >= 0.001:
+        text = "{:.3g}".format(p_value)
+
+    else:
+        text = "{:.2e}".format(p_value)
+
+    return ("<=" + text) if limit else text
+
+
+def formatSigma(sigma, limit=False):
+    """ A significance for the tables: one decimal from 1 sigma up, '<1' below it, where the number
+        measures nothing, and prefixed with '>=' for a limit. One decimal is all the value supports:
+        p_global is conservative by up to 1.6 times, which moves it by 0.1 sigma at 3.5 sigma.
+    """
+
+    if sigma < 1.0:
+        return "<1" if not limit else ">={:.1f}".format(sigma)
+
+    return "{:s}{:.1f}".format(">=" if limit else "", sigma)
+
+
+def formatOdds(p_value):
+    """ A probability as '1 in N' with 2 significant digits, for the ones small enough to be read that
+        way. """
+
+    if p_value >= 0.1:
+        return ""
+
+    odds = 1.0/p_value
+    digits = 2 - 1 - int(np.floor(np.log10(odds)))
+
+    return "1 in {:,.0f}".format(round(odds, digits)).replace(",", " ")
+
+
+def _significanceText(sigma):
+    """ The flag of a significance level. """
+
+    if sigma >= SIGMA_EVIDENCE:
+        return "3 sigma"
+
+    if sigma >= SIGMA_HINT:
+        return "2 sigma"
+
+    return ""
+
+
+def summariseChanceNEO(chance, search, search_all, chance_all):
+    """ The summary that closes the output of --chance_neo: what was tested, the most significant
+        body, whether anything is distinguishable from chance, and what cannot be concluded.
+
+        It is written for the criterion the bodies were ranked by, which is the one to choose before
+        looking, with one line for each of the others as a check. """
+
+    h_max = chance_all['h_max']
+
+    # The criterion the bodies were ranked by, if it was evaluated
+    primary = search['labels'][0] if search['labels'][0] in chance_all['labels'] \
+        else chance_all['labels'][0]
+
+    asteroids = [m for m in search_all['matches'] if m['h_mag'] >= 0]
+
+    ranked = rankByChance(search_all, chance_all, primary, top_n=-1)
+    n_tested = len(ranked)
+    n_faint = sum(1 for m in asteroids if m['h_mag'] > h_max)
+    n_other = len(search_all['matches']) - len(asteroids)
+
+    def _describe(entry, label):
+
+        match, d_value, r = entry
+
+        p_text = formatProbability(r['p_value_global'], r['is_limit'])
+
+        # A limit reads as "p_global <= x", a value as "p_global = x"
+        text = "{:s}, {:s} = {:.3f}, H = {:.1f}, p_global {:s}{:s} ({:s} sigma)".format(match['name'],
+            label, d_value, match['h_mag'], "" if p_text.startswith("<=") else "= ", p_text,
+            formatSigma(r['sigma'], r['is_limit']))
+
+        odds = formatOdds(r['p_value_global'])
+
+        if odds:
+            text += ", " + odds + (" or rarer" if r['is_limit'] else "")
+
+        return text
+
+    lines = ["Summary, for {:s}, the criterion the bodies were ranked by:".format(primary)]
+    lines.append("  Tested: {:d} of the {:d} bodies searched. {:d} asteroids are fainter than H = {:.0f} and "
+        "{:d} comets or meteorites have no H, so the".format(n_tested, len(search_all['matches']),
+            n_faint, h_max, n_other))
+    lines.append("  model cannot say whether they are a chance match.")
+
+    if not ranked:
+        lines.append("  No body could be tested.")
+        return lines
+
+    significant = [entry for entry in ranked if entry[2]['sigma'] >= SIGMA_EVIDENCE]
+    hints = [entry for entry in ranked if SIGMA_HINT <= entry[2]['sigma'] < SIGMA_EVIDENCE]
+
+    lines.append("  Most significant: " + _describe(ranked[0], primary) + ".")
+
+    if significant:
+
+        lines.append("  Verdict: {:d} {:s} {:s} {:.0f} sigma, the usual bar for evidence:".format(
+            len(significant), "body reaches" if len(significant) == 1 else "bodies reach",
+            "at least", SIGMA_EVIDENCE))
+
+        for entry in significant[:5]:
+            lines.append("    " + _describe(entry, primary))
+
+        if len(significant) > 5:
+            lines.append("    and {:d} more.".format(len(significant) - 5))
+
+    elif hints:
+
+        lines.append("  Verdict: a hint, not evidence. {:d} {:s} {:.0f} sigma but none {:.0f}, the usual bar:"
+            .format(len(hints), "body reaches" if len(hints) == 1 else "bodies reach", SIGMA_HINT,
+                SIGMA_EVIDENCE))
+
+        for entry in hints[:5]:
+            lines.append("    " + _describe(entry, primary))
+
+    else:
+        lines.append("  Verdict: no body is distinguishable from chance. None reaches {:.0f} sigma "
+            "(p_global > {:.3f}).".format(SIGMA_HINT, math.erfc(SIGMA_HINT/math.sqrt(2.0))))
+
+    if any(entry[2]['is_limit'] for entry in (significant + hints)[:5] + ranked[:1]):
+        lines.append("  No synthetic orbit is as close as some of these, so their p is at most and their sigma "
+            "at least the value shown: the {:d} synthetic orbits cannot resolve more.".format(
+                chance_all['n_population']))
+
+    # How many of the closest bodies could not be tested
+    n_closest = len(search['matches'])
+    n_untested = sum(1 for r in chance['results'][primary] if r['reason'] is not None)
+
+    if n_untested:
+        lines.append("  {:d} of the {:d} closest by {:s} could not be tested. A small parent body cannot be "
+            "ruled in or out by this method.".format(n_untested, n_closest, search['labels'][0]))
+
+    others = [label for label in chance_all['labels'] if label != primary]
+
+    if others:
+
+        lines.append("  Other criteria, as a check and not to pick the best of (the smallest p over several "
+            "criteria is not a p-value):")
+
+        for label in others:
+
+            other = rankByChance(search_all, chance_all, label, top_n=1)
+
+            lines.append("    {:s}: ".format(label) + (_describe(other[0], label) if other
+                else "no body could be tested"))
+
+    lines.append("  A low p says the match is unlikely by chance, not that the body is the parent. "
+        "The meteoroid's orbit is taken as exact.")
+
+    return lines
+
+
+def formatChanceNEO(chance, search, top_n=10, search_all=None, chance_all=None):
+    """ The lines that print the result of chanceNEO: for each criterion the matches of the search,
+        and, given the search and chanceNEO of the whole catalogue, the top_n most significant
+        asteroids, and the summary. """
+
+    model_range = "17 < H < 25, q < 1.3 AU, a < 4.2 AU"
+
+    lines = ["Chance coincidence with the debiased NEO population of {:s}: {:d} synthetic NEOs "
+        "({:s}), with the known ones with".format(chance['model'], chance['n_population'],
+            model_range),
+        "H <= 17, {:d} background NEOs to H = {:.0f}.".format(chance['n_background'], chance['h_max']),
+        "  N(H<=Hmag)  NEOs at least as large as the body.",
+        "  closer      synthetic orbits at least as close to the meteoroid's as the body's.",
+        "  expected    NEOs at least as large expected as close by chance, "
+            "N(H<=Hmag)*(closer + 1)/{:d}.".format(chance['n_population'] + 1),
+        "  p           probability of at least one. Valid for a body named before the search.",
+        "  p_global    the same counting a search over bodies of every size: the one to quote for a "
+            "body the search found.",
+        "  sigma       p_global as Gaussian standard deviations: 2 is a hint (p_global 0.046), 3 is "
+            "evidence (0.0027).",
+        "              Below 1 it measures nothing and is printed <1. A <= or >= marks a limit.",
+        "  A summary follows the tables."]
+
+    if chance['skipped']:
+        lines.append("  Skipped {:s}: a criterion on the radiant needs the radiant of every synthetic "
+            "NEO, which exists only where its orbit comes close to the Earth's.".format(
+                ", ".join(chance['skipped'])))
+
+    if not chance['meteor_in_model']:
+        lines.append("  No p-value for this meteoroid: " + chance['meteor_outside_reason'] + ".")
+        return lines
+
+    def _table(label, entries):
+
+        rows = ["Name                               ,  Hmag, {:>9s}, N(H<=Hmag),  closer,   expected,"
+            "          p,   p_global,  sigma,".format(label[:9])]
+
+        for match, d_value, r in entries:
+
+            start = "{:35s}, {:5.2f}, {:9.4f}, ".format(match['name'], match['h_mag'], d_value) \
+                if np.isfinite(d_value) else "{:35s}, {:5.2f}, {:>9s}, ".format(match['name'],
+                    match['h_mag'], "n/a")
+
+            if r['reason'] is not None:
+                rows.append(start + "n/a: " + r['reason'])
+                continue
+
+            limit = r['is_limit']
+
+            rows.append(start + "{:10d}, {:7d}, {:>10s}, {:>10s}, {:>10s}, {:>6s}, {:s}".format(
+                r['n_at_least_as_large'], r['n_closer'],
+                ("<=" if limit else "") + "{:.3g}".format(r['expected']),
+                formatProbability(r['p_value'], limit), formatProbability(r['p_value_global'], limit),
+                formatSigma(r['sigma'], limit), _significanceText(r['sigma'])).rstrip())
+
+        return rows
+
+    for label in chance['labels']:
+
+        c = search['labels'].index(label)
+
+        lines.append("")
+        lines.append("{:s}, the matches above, ranked by {:s}:".format(label, search['labels'][0]))
+        lines += _table(label, [(m, m['d_values'][c], r) for m, r in zip(search['matches'],
+            chance['results'][label])])
+
+        if (search_all is not None) and (chance_all is not None):
+
+            ranked = rankByChance(search_all, chance_all, label, top_n=top_n)
+
+            lines.append("")
+            lines.append("{:s}, the {:d} most significant of the {:d} bodies searched, ranked by "
+                "p:".format(label, len(ranked), len(search_all['matches'])))
+            lines += _table(label, ranked)
+
+    lines.append("")
+    lines.append("Please cite " + chance['reference'] + ".")
+
+    if (search_all is not None) and (chance_all is not None):
+        lines.append("")
+        lines += summariseChanceNEO(chance, search, search_all, chance_all)
+
+    return lines
+
+
 
 
 def propagateBodies(bodies, jd_target):
@@ -592,7 +973,13 @@ def criteriaAtEpoch(search, propagated, q, e, incl, peri, node):
     return out
 
 
-def _bodyRows(search, propagated=None, at_epoch_values=None):
+# The values of chanceNEO saved per match and criterion, as chance_neo_<label>_<name>
+CHANCE_NEO_FIELDS = ['n_at_least_as_large', 'n_closer', 'expected', 'p_value', 'expected_global',
+    'p_value_global', 'sigma', 'is_limit', 'expected_upper', 'p_value_upper', 'p_value_global_upper',
+    'reason']
+
+
+def _bodyRows(search, propagated=None, at_epoch_values=None, chance=None):
     """ The matches of a search as flat rows of (name, value) pairs, for the saved files. """
 
     rows = []
@@ -631,19 +1018,50 @@ def _bodyRows(search, propagated=None, at_epoch_values=None):
                 for c, label in enumerate(search['labels']):
                     row.append(('at_epoch_' + label, None if values is None else values[c]))
 
+        if chance is not None:
+
+            for label in chance['labels']:
+
+                r = chance['results'][label][rank]
+
+                for field in CHANCE_NEO_FIELDS:
+                    row.append(('chance_neo_' + label + '_' + field, r[field]))
+
         rows.append(row)
 
     return rows
 
 
-def saveMatches(file_path, search, meteor=None, propagated=None, at_epoch_values=None):
+def _rankedRows(ranked):
+    """ The bodies ranked by significance (rankByChance), for each criterion, as flat rows of
+        (name, value) pairs. """
+
+    rows = []
+
+    for label, entries in ranked.items():
+
+        for rank, (match, d_value, r) in enumerate(entries):
+
+            rows.append([('criterion', label), ('rank', rank + 1), ('name', match['name']),
+                ('q_AU', match['q']), ('e', match['e']), ('incl_deg', match['incl']),
+                ('peri_deg', match['peri']), ('node_deg', match['node']), ('h_mag', match['h_mag']),
+                ('d_value', d_value)] + [(field, r[field]) for field in CHANCE_NEO_FIELDS])
+
+    return rows
+
+
+def saveMatches(file_path, search, meteor=None, propagated=None, at_epoch_values=None, chance=None,
+    ranked=None):
     """ Save the matches of a search, with the value of every D criterion that was used.
 
         The format follows the extension: JSON for .json, a CSV table otherwise. The CSV has a row
         per body with its elements, a column per criterion in the order they were given, which is
         also the ranking order, and, if the bodies were propagated, their elements and heliocentric
-        state at the epoch and the criteria with them. The JSON also holds the orbit that was
-        searched for.
+        state at the epoch and the criteria with them, and, with chance, the chance-coincidence
+        values per criterion. The JSON also holds the orbit that was searched for.
+
+        The bodies ranked by significance (ranked) go into the JSON as 'most_significant', or, with a
+        CSV, into a second table beside it, <name>_chance_neo.csv, a row per criterion and body.
 
     Arguments:
         file_path: [str] Path of the file to write.
@@ -653,13 +1071,18 @@ def saveMatches(file_path, search, meteor=None, propagated=None, at_epoch_values
         meteor: [dict] The orbit that was searched for, saved to the JSON file.
         propagated: [list] Return of propagateBodies for the matches, in the same order.
         at_epoch_values: [list] Return of criteriaAtEpoch for them.
+        chance: [dict] Return of chanceNEO for the search.
+        ranked: [dict] For each criterion label, the return of rankByChance.
+
+    Return:
+        [list] The paths of the files written.
     """
 
     def _finite(v):
         """ Infinite values are not JSON. """
         return v if (v is not None) and np.isfinite(v) else None
 
-    rows = _bodyRows(search, propagated, at_epoch_values)
+    rows = _bodyRows(search, propagated, at_epoch_values, chance)
 
     if file_path.lower().endswith('.json'):
 
@@ -669,9 +1092,11 @@ def saveMatches(file_path, search, meteor=None, propagated=None, at_epoch_values
 
             k = len(matches)
 
-            # The flat columns of the state at the epoch are kept in 'at_epoch' instead
+            # The flat columns of the state at the epoch are kept in 'at_epoch' instead, and those of
+            #   the chance coincidence in 'chance_neo'
             entry = dict((name, v) for name, v in row
-                if (name not in search['labels']) and (not name.startswith('at_epoch_')))
+                if (name not in search['labels']) and (not name.startswith('at_epoch_'))
+                and (not name.startswith('chance_neo_')))
             entry['criteria'] = dict((label, _finite(v)) for label, v in zip(search['labels'],
                 match['d_values']))
 
@@ -684,6 +1109,10 @@ def saveMatches(file_path, search, meteor=None, propagated=None, at_epoch_values
                     entry['at_epoch']['criteria'] = dict((label, _finite(v))
                         for label, v in zip(search['labels'], at_epoch_values[k]))
 
+            if chance is not None:
+                entry['chance_neo'] = dict((label, dict((field, chance['results'][label][k][field])
+                    for field in CHANCE_NEO_FIELDS)) for label in chance['labels'])
+
             matches.append(entry)
 
         out = {'meteor': meteor, 'criteria': search['labels'], 'criteria_keys': search['keys'],
@@ -693,8 +1122,19 @@ def saveMatches(file_path, search, meteor=None, propagated=None, at_epoch_values
             'frame': 'heliocentric ecliptic J2000, AU and AU/day' if propagated is not None else None,
             'matches': matches}
 
+        if chance is not None:
+            out['chance_neo'] = dict((name, chance[name]) for name in ('model', 'reference', 'license',
+                'n_population', 'n_background', 'h_max', 'confidence', 'meteor_in_model',
+                'meteor_outside_reason', 'labels', 'skipped'))
+
+            if ranked is not None:
+                out['chance_neo']['most_significant'] = dict((label, [dict(row[1:])
+                    for row in _rankedRows({label: entries})]) for label, entries in ranked.items())
+
         with open(file_path, 'w') as f:
             json.dump(out, f, indent=2)
+
+        return [file_path]
 
         return
 
@@ -707,6 +1147,27 @@ def saveMatches(file_path, search, meteor=None, propagated=None, at_epoch_values
 
         for row in rows:
             writer.writerow(['' if v is None else v for _, v in row])
+
+    written = [file_path]
+
+    if ranked:
+
+        ranked_path = os.path.splitext(file_path)[0] + '_chance_neo.csv'
+        ranked_rows = _rankedRows(ranked)
+
+        with open(ranked_path, 'w', newline='') as f:
+
+            writer = csv.writer(f)
+
+            if ranked_rows:
+                writer.writerow([k for k, _ in ranked_rows[0]])
+
+            for row in ranked_rows:
+                writer.writerow(['' if v is None else v for _, v in row])
+
+        written.append(ranked_path)
+
+    return written
 
 
 def plotCriteriaBars(search, file_path, title=None):
@@ -817,7 +1278,18 @@ if __name__ == "__main__":
 
   The ranking uses the catalogue elements as they are. --propagate does not change it: it brings the
   top N to the reference epoch of the meteor, to be used as initial conditions of a REBOUND integration.
-  --save writes the matches, with every criterion, to a CSV or JSON file.""")
+  --save writes the matches, with every criterion, to a CSV or JSON file.
+
+Is a match more than chance?
+  --chance_neo gives, for each asteroid and each criterion on the elements, the number of NEOs at least
+  as large expected as close to the orbit by chance and the probability of at least one, from the
+  debiased NEO population of Granvik et al. (2018): p for a body named before the search, p_global
+  corrected for having searched bodies of every size, the one to quote for a body the search found,
+  and its sigma (2 sigma = 0.046 is a hint, 3 sigma = 0.0027 is evidence). It lists the top N by D and the N
+  most significant asteroids of the whole catalogue, and ends with a summary and a verdict. The
+  population, 28 MB, is downloaded to wmpl/share the first time:
+
+      python -m wmpl.Utils.ParentBodySearch traj.pickle -d DSH RHO2 --chance_neo""")
 
     arg_parser.add_argument('traj_path', nargs="?", metavar='TRAJ_PATH', type=str, \
         help="Path to the trajectory pickle file.")
@@ -881,6 +1353,15 @@ if __name__ == "__main__":
 
     arg_parser.add_argument('--jd', metavar='JD', type=float, \
         help="Reference epoch of the meteor as a Julian date, if there is no pickle.")
+
+    arg_parser.add_argument('--chance_neo', action="store_true", \
+        help="For each asteroid, the probability that a NEO at least as large lies at least as close "
+        "to the orbit by chance (the p-value of the match), alone and corrected for the search "
+        "(p_global, with its sigma), for every criterion on the orbital elements given with -d, "
+        "against the debiased NEO population of Granvik et al. (2018), the N most significant "
+        "asteroids of the catalogue, and a summary with a verdict. The population (28 MB) is downloaded to wmpl/share on first use. "
+        "Comets, meteorites and asteroids fainter than H = 25 get no p-value, and the criteria on the "
+        "radiant are skipped. See wmpl.Utils.DebiasedNEOPopulation.")
 
     arg_parser.add_argument('--no_plot', action="store_true", \
         help="Do not save the bar plot that is saved by default when several D criteria are given.")
@@ -987,10 +1468,13 @@ if __name__ == "__main__":
 
     ##########################################################################################################
 
-    # Find parent bodies for the given orbit
-    search = searchParentBodies(q, e, np.radians(incl), np.radians(peri), np.radians(node), \
-        d_crit=d_crit_keys, top_n=cml_args.top_n, meteorites=cml_args.meteorites, geocentric=geocentric,
-        heliocentric=heliocentric)
+    # Find parent bodies for the given orbit. To rank them by significance, --chance_neo needs the
+    #   whole catalogue: the criteria are computed for every body anyway, and the top N is taken from it
+    search_all = searchParentBodies(q, e, np.radians(incl), np.radians(peri), np.radians(node), \
+        d_crit=d_crit_keys, top_n=-1 if cml_args.chance_neo else cml_args.top_n,
+        meteorites=cml_args.meteorites, geocentric=geocentric, heliocentric=heliocentric)
+
+    search, _ = firstMatches(search_all, None, cml_args.top_n)
 
     labels = search['labels']
     matches = search['matches']
@@ -1036,6 +1520,45 @@ if __name__ == "__main__":
             m['e'], m['incl'], m['peri'], m['node'], m['h_mag']) \
             + ", ".join("{:{:d}.{:d}f}".format(v, w, d) if np.isfinite(v) else "{:>{:d}s}".format("n/a", w) \
             for v, w, d in zip(m['d_values'], widths, decimals)))
+
+
+    # The probability that each match is a chance coincidence
+    chance = None
+    ranked = None
+
+    if cml_args.chance_neo and matches:
+
+        print()
+
+        if all(lookupCriterion(key)[3] != 'elements' for key in search['keys']):
+            print("--chance_neo needs a criterion on the orbital elements: {:s} {:s} on the radiant, "
+                "which would need the radiant of every synthetic NEO, and that exists only where its "
+                "orbit comes close to the Earth's.".format(", ".join(labels),
+                    "is" if len(labels) == 1 else "are"))
+
+        else:
+
+            if 'MOID' in search['keys']:
+                print("The MOID against the 802000 synthetic NEOs takes about half a minute...")
+
+            chance_all = None
+
+            try:
+                chance_all = chanceNEO(search_all, q, e, np.radians(incl), np.radians(peri),
+                    np.radians(node))
+
+            except IOError as err:
+                print("--chance_neo: {:s}".format(str(err)), file=sys.stderr)
+
+            if chance_all is not None:
+
+                _, chance = firstMatches(search_all, chance_all, cml_args.top_n)
+
+                ranked = dict((label, rankByChance(search_all, chance_all, label,
+                    top_n=cml_args.top_n)) for label in chance_all['labels'])
+
+                print("\n".join(formatChanceNEO(chance, search, top_n=cml_args.top_n,
+                    search_all=search_all, chance_all=chance_all)))
 
 
     # Bring the bodies to the reference epoch of the meteor
@@ -1097,11 +1620,14 @@ if __name__ == "__main__":
             meteor.update({'L_h_deg': np.degrees(l_h), 'B_h_deg': np.degrees(b_h),
                 'solar_longitude_deg': np.degrees(sol_h), 'v_h_kms': v_h})
 
-        saveMatches(cml_args.save, search, meteor=meteor, propagated=propagated,
-            at_epoch_values=at_epoch_values)
+        written = saveMatches(cml_args.save, search, meteor=meteor, propagated=propagated,
+            at_epoch_values=at_epoch_values, chance=chance, ranked=ranked)
 
         print()
         print("Saved the matches to", cml_args.save)
+
+        if len(written) > 1:
+            print("Saved the most significant bodies to", written[1])
 
 
     # With more than one criterion, plot them side by side by default
