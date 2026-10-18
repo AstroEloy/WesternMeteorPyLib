@@ -16,8 +16,8 @@ from wmpl.Formats.GenericFunctions import addSolverOptions, solveTrajectoryGener
 from wmpl.Utils.Math import vectNorm, vectMag, angleBetweenSphericalCoords
 from wmpl.Trajectory.Trajectory import ObservedPoints
 from wmpl.Utils.Pickling import loadPickle
-from wmpl.Utils.TrajConversions import J2000_JD, datetime2JD, altAz2RADec_vect, \
-    equatorialCoordPrecession_vect, equatorialCoordDateToJ2000_vect, jd2Date
+from wmpl.Utils.TrajConversions import datetime2JD, altAz2RADec_vect, equatorialCoordDateToJ2000_vect, \
+    equatorialCoordJ2000ToDate_vect, jd2Date
 
 
 
@@ -333,6 +333,15 @@ def originalPicksTrajectory(traj):
     return loadPickle(*os.path.split(traj_path))
 
 
+def radecPerPoint(traj):
+    """ Whether the trajectory was solved with each R.A./Dec. converted at its own point's time (radec_jd), as
+        loadECSVs does by default, so that its fragments and flares are read the same way. Trajectories solved
+        before radec_jd existed were not.
+    """
+
+    return any(getattr(obs, 'radec_jd', None) is not None for obs in traj.observations)
+
+
 def solveFragmentTrajectories(traj, ecsv_paths, reuse_timing=True):
     """ Solve the trajectories of the additional fragments described in ECSV files (see ecsvFragments()),
         after the main one and with the same solver options. Each one is saved in a fragment_k folder of the
@@ -363,7 +372,9 @@ def solveFragmentTrajectories(traj, ecsv_paths, reuse_timing=True):
         print("The trajectories of additional fragments can only be solved with the original solver.")
         return []
 
-    _, input_meteors = loadECSVs(ecsv_paths, no_prepare=True)
+    radec_per_point = radecPerPoint(traj)
+
+    _, input_meteors = loadECSVs(ecsv_paths, no_prepare=True, radec_per_point=radec_per_point)
     main_offsets = appliedTimeOffsets(originalPicksTrajectory(traj), input_meteors)
 
     fragment_trajs = []
@@ -372,7 +383,8 @@ def solveFragmentTrajectories(traj, ecsv_paths, reuse_timing=True):
         print()
         print("Solving the trajectory of fragment {:d}...".format(fragment))
 
-        _, meteor_list = loadECSVs(ecsv_paths, no_prepare=True, fragment=fragment)
+        _, meteor_list = loadECSVs(ecsv_paths, no_prepare=True, fragment=fragment, 
+            radec_per_point=radec_per_point)
         if len(meteor_list) < 2:
             print("Fragment {:d} has enough points (4 or more) from only {:d} station(s), but 2 are needed, "
                 "skipping.".format(fragment, len(meteor_list)))
@@ -580,20 +592,23 @@ def fragmentComparison(traj, fragment_trajs, reuse_timing=True):
     return out_str
 
 
-def loadFlares(ecsv_paths):
+def loadFlares(ecsv_paths, radec_per_point=True):
     """ Load the points of the main fragment flagged as flares in ECSV files, and the observations the main
         trajectory is solved from, which give the time offsets of their stations.
 
     Arguments:
         ecsv_paths: [list] List of paths to ECSV files.
 
+    Keyword arguments:
+        radec_per_point: [bool] Passed to loadECSVs(); take it from the trajectory with radecPerPoint().
+
     Return:
         (flare_meteors, input_meteors): [tuple] Lists of MeteorObservation objects from loadECSVs(), with
             flares=True and without.
     """
 
-    _, flare_meteors = loadECSVs(ecsv_paths, no_prepare=True, flares=True)
-    _, input_meteors = loadECSVs(ecsv_paths, no_prepare=True)
+    _, flare_meteors = loadECSVs(ecsv_paths, no_prepare=True, flares=True, radec_per_point=radec_per_point)
+    _, input_meteors = loadECSVs(ecsv_paths, no_prepare=True, radec_per_point=radec_per_point)
 
     return flare_meteors, input_meteors
 
@@ -635,12 +650,17 @@ def projectFlares(traj, flare_meteors, input_meteors, noise_sigma=None, ang_res_
         if time_diffs is not None:
             t_rel += time_diffs.get(station_ids[meteor.ecsv_file], 0.0)
 
-        # Precess from J2000 to the epoch of date, as the observations given to the solver
-        ra, dec = equatorialCoordPrecession_vect(J2000_JD.days, np.zeros_like(meteor.ra_data) + traj.jdt_ref, 
-            meteor.ra_data, meteor.dec_data)
+        # Precess and nutate from J2000 to the epoch of date, as the observations given to the solver
+        ra, dec = equatorialCoordJ2000ToDate_vect(np.zeros_like(meteor.ra_data) + traj.jdt_ref, meteor.ra_data, 
+            meteor.dec_data)
+
+        # The time each R.A./Dec. was computed at is the one recorded, not t_rel, which has the time offsets
+        radec_jd = None
+        if meteor.radec_per_point:
+            radec_jd = meteor.jdt_ref + np.array(meteor.time_data)/86400.0
 
         obs = ObservedPoints(traj.jdt_ref, ra, dec, t_rel, meteor.latitude, meteor.longitude, meteor.height, 1, 
-            station_id=station_ids[meteor.ecsv_file])
+            station_id=station_ids[meteor.ecsv_file], radec_jd=radec_jd)
 
         # Add noise to the lines of sight as the Monte Carlo runs of the solver do
         if noise_sigma is not None:
@@ -701,7 +721,7 @@ def flareHeights(traj, ecsv_paths, mc_trajs=None):
             None without Monte Carlo runs.
     """
 
-    flare_meteors, input_meteors = loadFlares(ecsv_paths)
+    flare_meteors, input_meteors = loadFlares(ecsv_paths, radec_per_point=radecPerPoint(traj))
     if not flare_meteors:
         return []
 
