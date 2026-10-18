@@ -25,11 +25,13 @@ import pyximport
 pyximport.install(setup_args={'include_dirs':[np.get_include()]})
 from wmpl.MetSim.MetSimErosionCyTools import massLossRK4, decelerationRK4, luminousEfficiency, \
     ionizationEfficiency, atmDensityPoly
+from wmpl.Utils.TrajConversions import gravity
 
 
 ### DEFINE CONSTANTS
 
-# Earth acceleration in m/s^2 on the surface
+# Earth acceleration in m/s^2 on the surface. Not used any more, kept for scripts that import it: gravity()
+#   gives it at any latitude and height
 G0 = 9.81
 
 # Rotation rate of the Earth (rad/s), over one sidereal day
@@ -98,6 +100,9 @@ class Constants(object):
         
         # Radius of the Earth (m)
         self.r_earth = 6_371_008.7714
+
+        # Latitude (radians) used to compute the gravity
+        self.lat = np.radians(45.0)
 
         self.total_fragments = 0
 
@@ -992,7 +997,7 @@ def ablateAll(fragments, const, compute_wake=False, wake_heights_queue=None):
             if gravity_3d:
                 r_up = const.r_earth + const.h_init + frag.pz
                 r = math.sqrt(frag.px**2 + frag.py**2 + r_up**2)
-                g_dt = G0*(const.r_earth/r)**2*const.dt/r
+                g_dt = gravity(const.lat, r - const.r_earth)*const.dt/r
                 vx, vy, vz = frag.vx, frag.vy, frag.vz
                 frag.vx -= (g_dt*frag.px + (coriolis_n*vz - coriolis_u*vy)*const.dt)
                 frag.vy -= (g_dt*frag.py + coriolis_u*vx*const.dt)
@@ -1001,13 +1006,13 @@ def ablateAll(fragments, const, compute_wake=False, wake_heights_queue=None):
 
             # Otherwise the same negligible gravity drop as in 2D
             else:
-                frag.h_grav_drop_total += 0.5*G0/((1 + frag.h/const.r_earth)**2)*const.dt**2
+                frag.h_grav_drop_total += 0.5*gravity(const.lat, frag.h)*const.dt**2
 
         # Otherwise update the velocity
         else:
 
             # Compute g at given height
-            gv = G0/((1 + frag.h/const.r_earth)**2)
+            gv = gravity(const.lat, frag.h)
 
             # ### Add velocity change due to Earth's gravity ###
 

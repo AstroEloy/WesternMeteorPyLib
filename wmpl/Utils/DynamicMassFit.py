@@ -28,11 +28,12 @@ from wmpl.Utils.AtmosphereDensity import fitAtmPoly, getAtmDensityTable, addAtmo
 from wmpl.Utils.Math import lineFunc, vectMag, rotateVector
 from wmpl.Utils.TrajConversions import cartesian2Geo, derotatedRadiantAltAz, jd2LST, enu2ECEF, ecef2ENU
 from wmpl.Utils.Physics import dynamicMass
+from wmpl.Utils.TrajConversions import gravity
 from wmpl.Utils.Pickling import loadPickle
 from wmpl.Utils.PyDomainParallelizer import domainParallelizer
 from wmpl.Utils.DynamicMassFitExport import ejectionState, buildDynMassFitOutput, saveDynMassFitPickle
 from wmpl.Utils.AtmosphereProfile import AtmosphereProfile, PROFILE_TYPES
-from wmpl.MetSim.MetSimErosion import Constants, runSimulation, G0, EARTH_ROTATION_RATE
+from wmpl.MetSim.MetSimErosion import Constants, runSimulation, EARTH_ROTATION_RATE
 from wmpl.MetSim.GUI import SimulationResults
 from wmpl.Trajectory.Trajectory import applyGravityDrop
 
@@ -131,7 +132,7 @@ def evalPointState(traj, height, ht_vs_time_interp=None):
 
     t_obs = np.concatenate([obs.time_data for obs in traj.observations])
     t_turn = 0.0 if getattr(traj, 'gravity_correction', True) else (np.min(t_obs) + np.max(t_obs))/2
-    elev += G0/(1 + height/Constants().r_earth)**2*np.cos(elev)*(time - t_turn)/traj.orbit.v_avg_norot
+    elev += gravity(lat, height)*np.cos(elev)*(time - t_turn)/traj.orbit.v_avg_norot
 
     return time, length, eci, jd, lat, lon, azim, elev
 
@@ -286,6 +287,9 @@ def runFragSim(mass, density, lat, lon, jd, ht_beg, v_init, entry_angle, gamma_a
     # Follow the body in 3D with gravity and the Coriolis acceleration in its velocity
     const.gravity_3d = True
     const.latitude = np.radians(lat)
+
+    # Latitude, for the gravity
+    const.lat = np.radians(lat)
 
     # Use Borovicka 2020 luminous efficiency (not really used here)
     const.lum_eff_type = 7
