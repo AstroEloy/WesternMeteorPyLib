@@ -302,12 +302,14 @@ HILL_RADII_AU = {
 PLANET_ORDER = ["Sun", "Mercury", "Venus", "Earth", "Luna", "Mars", "Jupiter", "Saturn", "Uranus", "Neptune"]
 
 # The Sun has no Hill sphere, so a close approach to it is flagged by distance instead: a perihelion
-# passage closer than this is listed with the other close encounters. 0.1 AU is where the thermal
-# processing of meteoroids is established: Na is thermally desorbed at q < 0.1 AU (Kasuga et al.
-# 2006, A&A 453, L17; the Na-free population of Borovicka et al. 2005), asteroids disrupt at
-# q ~ 0.076 AU (Granvik et al. 2016, Nature 530, 303), and it lies inside the sunskirter zone of
-# Jones et al. (2018, SSRv 214, 20), q < 33 R_Sun = 0.153 AU.
-SUN_ENCOUNTER_AU = 0.1
+# passage closer than this is listed with the other close encounters. 0.2 AU is the limit of the
+# Sun-approaching orbital class of Borovicka et al. (2005, Icarus 174, 15), the one meteor studies
+# use: almost all meteoroids inside it are Na-free or Na-poor (Vojacek et al. 2019, A&A 621, A68,
+# sect. 3.3). Inside 0.1 AU all of them are, the sodium being thermally desorbed (Kasuga et al.
+# 2006, A&A 453, L17), asteroids disrupt at q ~ 0.076 AU (Granvik et al. 2016, Nature 530, 303),
+# and the sunskirter zone of Jones et al. (2018, SSRv 214, 20), q < 33 R_Sun = 0.153 AU, lies
+# inside it.
+SUN_ENCOUNTER_AU = 0.2
 
 # The close-approach panel of the figure leaves out a body the object never came within this many of
 #   its Hill radii of: it never mattered (Mercury, seen from an Earth-crossing orbit, stays hundreds of
@@ -1353,6 +1355,14 @@ def formatSunPassageSummary(summary):
                 formatTimeStamp(summary["first_days"]), formatTimeStamp(summary["last_days"]))
 
 
+# Sun passages closer than this count in the WHFast warning, although the Sun is listed out to
+# SUN_ENCOUNTER_AU: WHFast's fixed step fails only much closer in. Measured with _integrateParticles
+# and the default 0.5 d step against IAS15 over 100 yr (the Sun and five planets, gr_full, a = 1.27
+# and 2.6 AU, i = 25 deg), the error in a was 9e-4 to 1e-2 at q = 0.07 AU, 5e-6 to 6e-6 at 0.10 AU,
+# 1e-6 to 4e-6 at 0.14 AU and below 7e-7 from 0.17 AU.
+WHFAST_SUN_WARNING_AU = 0.1
+
+
 def whfastEncounterWarning(diagnostics, n_hill=3.0):
     """ Warn if any close encounter happened while WHFast, which cannot resolve one, was integrating.
 
@@ -1360,7 +1370,8 @@ def whfastEncounterWarning(diagnostics, n_hill=3.0):
     a close encounter: measured over flybys inside 0.1 Hill radii, the error in the semi-major axis
     afterwards was 0.3% to 200%, where TRACE stayed within 4e-6. The nominal solution and every Monte
     Carlo clone are checked, since a clone can pass much closer to a planet than the nominal
-    solution does.
+    solution does. A Sun passage counts only inside WHFAST_SUN_WARNING_AU, closer than the
+    SUN_ENCOUNTER_AU out to which it is listed.
 
     Arguments:
         diagnostics: [dict] {particle name: diagnostics} as returned by reboundSimulate with
@@ -1388,8 +1399,12 @@ def whfastEncounterWarning(diagnostics, n_hill=3.0):
         for enc in diag.get("encounters", []):
 
             # The list already holds every passage; only the ones inside the threshold count (the
-            #   Sun's threshold is fixed, so all of its passages do)
+            #   Sun has no Hill radius, and is tested on its distance below)
             if (enc["n_hill"] is not None) and (enc["n_hill"] >= n_hill):
+                continue
+
+            # The Sun is listed out to SUN_ENCOUNTER_AU, but the fixed step fails only much closer
+            if (enc["body"] == "Sun") and (enc["min_dist_au"] >= WHFAST_SUN_WARNING_AU):
                 continue
 
             # Times run along a signed axis (negative for a backward run), so the comparison is
@@ -1406,7 +1421,7 @@ def whfastEncounterWarning(diagnostics, n_hill=3.0):
             "either, so the orbits after them can be wrong (measured: 0.3% to 200% in a after "
             "flybys inside 0.1 R_Hill; an orbit with q = 0.07 AU was ejected within 100 yr at the "
             "default 0.5 d step). Rerun with --integrator trace or ias15.".format(
-                n_encounters, n_hill, SUN_ENCOUNTER_AU))
+                n_encounters, n_hill, WHFAST_SUN_WARNING_AU))
 
 
 # Rank correlation below which the clones no longer keep the order of their initial conditions
