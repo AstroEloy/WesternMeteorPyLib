@@ -51,7 +51,7 @@ def ecsvFragments(ecsv_paths):
     return sorted(fragments)
 
 
-def loadECSVs(ecsv_paths, no_prepare=False, fragment=0, flares=False):
+def loadECSVs(ecsv_paths, no_prepare=False, fragment=0, flares=False, radec_per_point=True):
     """ Load meteor observations from ECSV files. 
     
     Arguments:
@@ -66,6 +66,10 @@ def loadECSVs(ecsv_paths, no_prepare=False, fragment=0, flares=False):
         flares: [bool] Only load the points of the main fragment flagged as flares (flare = True), also those
             not used in its trajectory, whose flags are kept in the trajectory_use array of every observation.
             The minimum number of points of an observation does not apply.
+        radec_per_point: [bool] Have the solver convert each point's R.A./Dec. back to azimuth/altitude at
+            that point's own time, at which they were computed from the file. True by default. False
+            reproduces solutions from before this option existed, which converted them all at the reference
+            time and rotated each line of sight by the Earth's rotation since then.
     
     """
 
@@ -219,6 +223,9 @@ def loadECSVs(ecsv_paths, no_prepare=False, fragment=0, flares=False):
             # Init the meteor object
             meteor = MeteorObservation(jdt_ref, station_id, np.radians(station_lat), \
                 np.radians(station_lon), station_ele, FPS, ff_name=comment)
+
+            # The R.A./Dec. above were computed at each point's own time
+            meteor.radec_per_point = radec_per_point
 
             # Add data to meteor object
             for t_rel, x_centroid, y_centroid, ra, dec, azim, alt, mag in zip(time_data, x_data, y_data, \
@@ -1106,6 +1113,10 @@ if __name__ == "__main__":
         help="With --fragments, estimate the time offsets of the stations for every fragment instead of taking the ones of the main trajectory, which are better constrained by its larger number of points.", \
         action="store_true")
 
+    arg_parser.add_argument('--radec_at_ref', \
+        help="Convert every point's R.A./Dec. to azimuth/altitude at the reference time, as before this option existed, instead of at the time each was computed. Only to reproduce older solutions: it rotates each line of sight by the Earth's rotation since the reference time.", \
+        action="store_true")
+
     # Parse the command line arguments
     cml_args = arg_parser.parse_args()
 
@@ -1167,7 +1178,7 @@ if __name__ == "__main__":
 
 
     # Load the observations into container objects
-    jdt_ref, meteor_list = loadECSVs(ecsv_paths)
+    jdt_ref, meteor_list = loadECSVs(ecsv_paths, radec_per_point=not cml_args.radec_at_ref)
 
 
     # Write the observations to a MILIG input file and exit
