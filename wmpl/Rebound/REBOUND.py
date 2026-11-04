@@ -2615,7 +2615,8 @@ def extractSimParams(ps, obj_name, planet_names, reference_frame="heliocentric")
 #   correction from the dominant body, the Sun, applied to every body: it gets the perihelion
 #   precession and the mean motions right. "gr_full" (Newhall et al. 1983, the EIH equations) is the
 #   interaction between every pair of bodies; its cost grows as the cube of the number of bodies.
-GR_MODELS = ("gr", "gr_full")
+#   "none" leaves general relativity out, for comparison with purely Newtonian integrations.
+GR_MODELS = ("gr", "gr_full", "none")
 
 # Integrators that can be selected for the integration. IAS15 is adaptive and the default. WHFast
 # and TRACE use a fixed timestep (see FIXED_STEP_DEFAULT_DT_DAYS).
@@ -2808,8 +2809,9 @@ def _integrateParticles(task, progress=None):
                                  Moon 1737.4 km).
             integrator:      [str]  Optional. "ias15" (default, adaptive), "whfast" or "trace".
             gr:              [str]  Optional. General relativity: "gr_full" (default), the
-                                 post-Newtonian interaction between all pairs of bodies, or "gr",
-                                 the correction of the Sun's field on every body (see GR_MODELS).
+                                 post-Newtonian interaction between all pairs of bodies, "gr",
+                                 the correction of the Sun's field on every body, or "none", no
+                                 relativistic correction (see GR_MODELS).
             sun_j2:          [bool] Optional. Include the Sun's J2 (SUN_J2), symmetric about its
                                  rotation axis (sunSpinAxisEcliptic). Default True.
             earth_spin_axis: [list] Optional. Direction of the Earth's rotation axis in the
@@ -2979,9 +2981,10 @@ def _integrateParticles(task, progress=None):
     gr_model = task.get("gr", "gr_full")
     if gr_model not in GR_MODELS:
         raise ValueError("Unknown GR model {:s}, use one of {:s}.".format(str(gr_model), ", ".join(GR_MODELS)))
-    gr = rebx.load_force(gr_model)
-    rebx.add_force(gr)
-    gr.params["c"] = rbxConstants.C
+    if gr_model != "none":
+        gr = rebx.load_force(gr_model)
+        rebx.add_force(gr)
+        gr.params["c"] = rbxConstants.C
 
     # Optional solar radiation pressure and Poynting-Robertson drag on the integrated particles.
     # Off unless a beta is supplied, because it needs the object's size and density, which are not
@@ -4530,7 +4533,7 @@ def integrateHeliocentricBodies(names, states_hel, jd_tdb, times, ephem_source="
     return _integrateParticles(task)
 
 
-def propagateBodiesToEpoch(bodies, jd_tdb_target, ephem_source="local", n_outputs=20):
+def propagateBodiesToEpoch(bodies, jd_tdb_target, ephem_source="local", n_outputs=20, gr="gr_full"):
     """ Bring bodies given by osculating elements at their own epochs to a common epoch, by
     integrating them with integrateHeliocentricBodies. Bodies that share an epoch, which is every
     asteroid of the catalogues, are integrated together.
@@ -4549,6 +4552,7 @@ def propagateBodiesToEpoch(bodies, jd_tdb_target, ephem_source="local", n_output
         ephem_source: [str] "local" (default) or "horizons".
         n_outputs: [int] Output times along the way. Only the last one is returned, but the encounter
             and impact detection of _integrateParticles is armed at an output, so a few are taken.
+        gr: [str] General relativity model, one of GR_MODELS. Default "gr_full".
 
     Return:
         [list] For each body, None if it could not be brought to the epoch (no epoch, no place on its
@@ -4557,6 +4561,11 @@ def propagateBodiesToEpoch(bodies, jd_tdb_target, ephem_source="local", n_output
             'mean_anomaly' (deg, None if the orbit is not elliptic), 'position' (AU) and 'velocity'
             (AU/day), heliocentric ecliptic J2000.
     """
+
+    # Checked here because an epoch outside the ephemeris is caught below as a ValueError, which would
+    #   otherwise also swallow an unknown model and leave every body unpropagated without a word
+    if gr not in GR_MODELS:
+        raise ValueError("Unknown GR model {:s}, use one of {:s}.".format(str(gr), ", ".join(GR_MODELS)))
 
     results = [None]*len(bodies)
 
@@ -4602,7 +4611,8 @@ def propagateBodiesToEpoch(bodies, jd_tdb_target, ephem_source="local", n_output
         times = np.linspace(0, (jd_tdb_target - epoch_jd)/SIM_TIME_DAYS, max(2, n_outputs))
 
         try:
-            result = integrateHeliocentricBodies(names, states, epoch_jd, times, ephem_source=ephem_source)
+            result = integrateHeliocentricBodies(names, states, epoch_jd, times, ephem_source=ephem_source,
+                                                 gr=gr)
 
         # An epoch outside of the ephemeris leaves the bodies of the group where they are
         except ValueError:
@@ -4623,13 +4633,13 @@ def propagateBodiesToEpoch(bodies, jd_tdb_target, ephem_source="local", n_output
     return results
 
 
-def loadParentBodies(file_path, jd_tdb, ephem_source="local", top_n=None):
+def loadParentBodies(file_path, jd_tdb, ephem_source="local", top_n=None, gr="gr_full"):
     """ Read the matches saved by the parent body search (wmpl.Utils.ParentBodySearch --save, JSON) and
     return them at an epoch, ready to be integrated with integrateHeliocentricBodies.
 
     A body whose state the file holds at that epoch (saved with --propagate for the same trajectory)
-    is taken as it is. Otherwise it is brought there from its catalogue elements with
-    propagateBodiesToEpoch.
+    with the same general relativity model is taken as it is. Otherwise it is brought there from its
+    catalogue elements with propagateBodiesToEpoch, so that a run does not mix two force models.
 
     Arguments:
         file_path: [str] Path of the JSON file.
@@ -4638,6 +4648,9 @@ def loadParentBodies(file_path, jd_tdb, ephem_source="local", top_n=None):
     Keyword arguments:
         ephem_source: [str] "local" (default) or "horizons".
         top_n: [int] Use only the first N bodies of the file. All of them by default.
+        gr: [str] General relativity model of the propagation, one of GR_MODELS. Default "gr_full".
+            A file that does not name the model of its states was saved when "gr_full" was the only
+            one.
 
     Return:
         (bodies, criteria_keys, skipped): [tuple] The bodies as dictionaries with 'name', 'rank',
@@ -4663,8 +4676,9 @@ def loadParentBodies(file_path, jd_tdb, ephem_source="local", top_n=None):
 
         at_epoch = m.get("at_epoch")
 
-        # The state saved at this same epoch
-        if at_epoch and (at_epoch.get("jd_tdb") is not None) and (abs(at_epoch["jd_tdb"] - jd_tdb) < 1e-6):
+        # The state saved at this same epoch, with this same model
+        if at_epoch and (at_epoch.get("jd_tdb") is not None) and (abs(at_epoch["jd_tdb"] - jd_tdb) < 1e-6) \
+                and (at_epoch.get("gr", "gr_full") == gr):
             bodies[k] = at_epoch["position"] + at_epoch["velocity"]
 
         else:
@@ -4678,7 +4692,8 @@ def loadParentBodies(file_path, jd_tdb, ephem_source="local", top_n=None):
                      "perihelion_jd": matches[k].get("catalogue_perihelion_jd"),
                      "epoch_jd": matches[k].get("catalogue_epoch_jd")} for k in to_propagate]
 
-        for k, rec in zip(to_propagate, propagateBodiesToEpoch(elements, jd_tdb, ephem_source=ephem_source)):
+        propagated = propagateBodiesToEpoch(elements, jd_tdb, ephem_source=ephem_source, gr=gr)
+        for k, rec in zip(to_propagate, propagated):
             if rec is not None:
                 bodies[k] = rec["position"] + rec["velocity"]
 
@@ -5532,8 +5547,9 @@ def reboundSimulate(
         dt_days: [float] Timestep in days for WHFast and TRACE. None (default) uses
             FIXED_STEP_DEFAULT_DT_DAYS. Ignored by IAS15.
         gr: [str] General relativity model, "gr_full" (default; the post-Newtonian interaction between
-            all pairs of bodies) or "gr" (the Sun's post-Newtonian correction on every body, 3.3 times
-            faster, with the same results to ~1e-7 in a). See GR_MODELS.
+            all pairs of bodies), "gr" (the Sun's post-Newtonian correction on every body, 3.3 times
+            faster, with the same results to ~1e-7 in a) or "none" (Newtonian gravity only). See
+            GR_MODELS.
         sun_j2: [bool] Include the Sun's J2 (SUN_J2, about its rotation axis). Default True. It moves
             Mercury's perihelion by 0.03 arcsec per century, and a meteoroid's in proportion to
             (R_Sun/q)^2, so it matters most for small perihelia.
@@ -6008,9 +6024,10 @@ if __name__ == "__main__":
 
     parser.add_argument("--gr", type=str.lower, default="gr_full", choices=GR_MODELS,
                         help="General relativity: gr_full (default), the post-Newtonian interaction "
-                        "between all pairs of bodies, or gr, the Sun's post-Newtonian correction on "
-                        "every body. gr is 3.3 times faster and changes the orbits by ~1e-7 in a over "
-                        "100 years; use it for large Monte Carlo runs.")
+                        "between all pairs of bodies, gr, the Sun's post-Newtonian correction on "
+                        "every body, or none, Newtonian gravity only. gr is 3.3 times faster and "
+                        "changes the orbits by ~1e-7 in a over 100 years; use it for large Monte Carlo "
+                        "runs. none is for comparison with purely Newtonian integrations.")
 
     parser.add_argument("--no_sun_j2", action="store_true",
                         help="Leave out the Sun's J2 (on by default: J2 = {:.4e}, about the Sun's rotation "
@@ -6269,7 +6286,8 @@ if __name__ == "__main__":
         # The bodies start where the meteoroid does (above the atmosphere with --back_height)
         time_tdb_ref = utcToTdb(jd_start)
         parent_bodies, file_keys, parent_skipped = loadParentBodies(
-            args.parent_bodies, time_tdb_ref, ephem_source=ephem_source, top_n=args.parent_top)
+            args.parent_bodies, time_tdb_ref, ephem_source=ephem_source, top_n=args.parent_top,
+            gr=args.gr)
 
         try:
             parent_criteria = [lookupCriterion(k) for k in (args.parent_dcrit or file_keys)]
@@ -6572,8 +6590,9 @@ if __name__ == "__main__":
 
     print("  Frame        : {:s}".format(reference_frame))
     j2_axis = "" if harmonicsSpinAxisSupported() else " (about the ecliptic pole: REBOUNDx < 4.4.0)"
-    forces_str = "gravity + GR ({:s}) + {:s}Earth J2/J4{:s}".format(
-        "Sun" if args.gr == "gr" else "all bodies", "" if args.no_sun_j2 else "Sun J2 + ", j2_axis)
+    gr_str = {"gr": "GR (Sun) + ", "gr_full": "GR (all bodies) + ", "none": ""}[args.gr]
+    forces_str = "gravity + {:s}{:s}Earth J2/J4{:s}{:s}".format(
+        gr_str, "" if args.no_sun_j2 else "Sun J2 + ", j2_axis, " (no GR)" if args.gr == "none" else "")
     if beta is not None:
         forces_str += " + radiation (beta = {:.3e})".format(beta)
     print("  Forces       : {:s}".format(forces_str))
@@ -6959,6 +6978,7 @@ if __name__ == "__main__":
             f.write("Relative energy drift of the massive subsystem: {:.3e}\n".format(
                 nominal_diag["energy_rel_drift"]))
 
+        f.write("Forces: {:s}\n".format(forces_str))
         f.write("Integrator: {:s}\n".format(integrator_str))
         if whfast_warning:
             f.write("\n{:s}\n".format(whfast_warning))
