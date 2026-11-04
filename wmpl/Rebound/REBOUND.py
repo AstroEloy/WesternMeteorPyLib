@@ -788,7 +788,9 @@ def checkpointSignature(task, julian_date, state_vect, realizations, random_seed
         [dict] The signature.
     """
 
-    settings = {k: v for k, v in task.items() if k not in ("particle_states", "particle_names")}
+    # lean_outputs is left out when off, so that a checkpoint saved before it existed can be resumed
+    settings = {k: v for k, v in task.items() if (k not in ("particle_states", "particle_names"))
+                and not ((k == "lean_outputs") and not v)}
     with_mc = len(realizations) > 0
 
     return {
@@ -2618,6 +2620,12 @@ def extractSimParams(ps, obj_name, planet_names, reference_frame="heliocentric")
 #   "none" leaves general relativity out, for comparison with purely Newtonian integrations.
 GR_MODELS = ("gr", "gr_full", "none")
 
+# Arrays of the lean output format (see _integrateParticles): the output times, in REBOUND time
+#   units as in the rows of the full format, and the osculating elements of the rows' orbit object.
+#   They are what an ensemble of thousands of clones needs: 60 bytes per output in memory, against
+#   1.5 kB for a full row with the state vector and the distance to each of ten bodies.
+LEAN_OUTPUT_KEYS = ("t", "a", "e", "inc", "Omega", "omega", "f")
+
 # Integrators that can be selected for the integration. IAS15 is adaptive and the default. WHFast
 # and TRACE use a fixed timestep (see FIXED_STEP_DEFAULT_DT_DAYS).
 INTEGRATORS = ("ias15", "whfast", "trace")
@@ -2822,6 +2830,8 @@ def _integrateParticles(task, progress=None):
                                  Ignored by IAS15. Default FIXED_STEP_DEFAULT_DT_DAYS[integrator].
             compute_moid:    [bool] Optional. Compute the MOID with each of MOID_BODIES at every
                                  output ("moid_au" in the diagnostics). Default False.
+            lean_outputs:    [bool] Optional. Return each particle's outputs as one numpy array per
+                                 key of LEAN_OUTPUT_KEYS instead of one row per output. Default False.
 
     Keyword arguments:
         progress: [callable] Optional. Called as progress(t_days) with the time integrated so far,
@@ -2831,7 +2841,10 @@ def _integrateParticles(task, progress=None):
     Return:
         [dict] {
             "outputs": {particle_name: [[time, state_vect_hel, orb_ns, planet_dists], ...]}, where
-                orb_ns is a picklable SimpleNamespace with attributes a, e, inc, Omega, omega, f,
+                orb_ns is a picklable SimpleNamespace with attributes a, e, inc, Omega, omega, f.
+                With lean_outputs, {particle_name: {key: array}} for the keys of LEAN_OUTPUT_KEYS
+                instead, with the same values. Either format stops at the last output a particle
+                reached, so a particle that hit a body or escaped has fewer outputs.
             "diagnostics": {particle_name: {
                 "min_dist_au":   {body: closest approach in AU (None if never tracked)},
                 "min_time_days": {body: time of closest approach in days},
@@ -3035,16 +3048,23 @@ def _integrateParticles(task, progress=None):
     # minimum by a large fraction of that. The closest approach inside each step is therefore
     # refined on a Hermite interpolant of the relative motion (see hermiteClosestApproach). "prev"
     # holds the relative state of the previous step for each body, and "encounters" collects every
-    # refined local minimum that falls inside n_hill Hill radii, as (body, time, distance).
+    # refined local minimum that falls inside n_hill Hill radii, as (body index, time, distance).
+    # Everything per body is a list indexed like planet_names, because the heartbeat runs at every
+    # step and a dictionary lookup per body per step is a measurable part of its cost.
+    n_bodies = len(planet_names)
+    every_body = list(range(n_bodies))
+    luna_only = [bi for bi, bname in enumerate(planet_names) if bname == "Luna"]
+    thresholds = [_encounterThreshold(bname, n_hill) for bname in planet_names]
+
     track = {}
     for name in particle_names:
         track[name] = {
-            "min_dist": {b: np.inf for b in planet_names},
-            "min_time": {b: np.nan for b in planet_names},
+            "min_dist": [np.inf]*n_bodies,
+            "min_time": [np.nan]*n_bodies,
             "departed": False,
             "impact": None,
             "escaped": None,
-            "prev": {},
+            "prev": [None]*n_bodies,
             "encounters": [],
         }
 
@@ -3055,8 +3075,13 @@ def _integrateParticles(task, progress=None):
     def heartbeat(sim_pointer):
 
         s = sim_pointer.contents
-        p = s.particles
         t_now = s.t
+
+        # Every position and velocity in one copy, as plain floats. Fetching a particle through
+        #   sim.particles[i] costs ~1.7 us, and this needed 12 of them at every step.
+        states = np.empty((s.N, 6))
+        s.serialize_particle_data(xyzvxvyvz=states)
+        states = states.tolist()
 
         # Live progress. A failing report (e.g. a closed terminal) must never stop the integration.
         if (progress is not None) and (time.time() >= next_progress[0]):
@@ -3072,59 +3097,67 @@ def _integrateParticles(task, progress=None):
             if pidx >= s.N:
                 continue
 
-            o = p[pidx]
+            o = states[pidx]
             st = track[pname]
 
             # Distance to the Earth, used to decide whether the object has left its neighbourhood
-            pe = p[earth_i]
-            d_earth = ((o.x - pe.x)**2 + (o.y - pe.y)**2 + (o.z - pe.z)**2)**0.5
+            pe = states[earth_i]
+            d_earth = ((o[0] - pe[0])**2 + (o[1] - pe[1])**2 + (o[2] - pe[2])**2)**0.5
             if (not st["departed"]) and (d_earth > departure_radius):
                 st["departed"] = True
 
-            for bi, bname in enumerate(planet_names):
+            min_dist = st["min_dist"]
+            min_time = st["min_time"]
+            prevs = st["prev"]
 
-                # The Moon is tracked over the whole integration; every other body only after the
-                # object has left the Earth's neighbourhood, so the trivial initial departure from
-                # the Earth is not reported as an encounter.
-                if (bname != "Luna") and (not st["departed"]):
-                    continue
+            # The Moon is tracked over the whole integration; every other body only after the object
+            #   has left the Earth's neighbourhood, so the trivial initial departure from the Earth is
+            #   not reported as an encounter.
+            for bi in (every_body if st["departed"] else luna_only):
 
                 # Relative state as plain floats: this runs every step for every body, and building
                 # numpy arrays here would slow the whole integration down by ~10%
-                b = p[bi]
-                rel = (o.x - b.x, o.y - b.y, o.z - b.z, o.vx - b.vx, o.vy - b.vy, o.vz - b.vz)
+                b = states[bi]
+                rel = (o[0] - b[0], o[1] - b[1], o[2] - b[2], o[3] - b[3], o[4] - b[4], o[5] - b[5])
                 d = (rel[0]**2 + rel[1]**2 + rel[2]**2)**0.5
                 rv = rel[0]*rel[3] + rel[1]*rel[4] + rel[2]*rel[5]
 
-                if d < st["min_dist"][bname]:
-                    st["min_dist"][bname] = d
-                    st["min_time"][bname] = t_now
+                if d < min_dist[bi]:
+                    min_dist[bi] = d
+                    min_time[bi] = t_now
 
                 # The distance has a minimum inside the last step if the approach rate r.v changed
                 # sign from approaching to receding (h makes this hold in both time directions).
                 # Refine it on the Hermite interpolant of the step.
-                prev = st["prev"].get(bname)
+                prev = prevs[bi]
                 if prev is not None:
                     t_prev, rel_prev, rv_prev = prev
                     h = t_now - t_prev
                     if (h*rv_prev < 0) and (h*rv > 0):
                         rp, rn = np.array(rel_prev), np.array(rel)
                         d_h, t_h = hermiteClosestApproach(t_prev, rp[:3], rp[3:], t_now, rn[:3], rn[3:])
-                        if d_h < st["min_dist"][bname]:
-                            st["min_dist"][bname] = d_h
-                            st["min_time"][bname] = t_h
+                        if d_h < min_dist[bi]:
+                            min_dist[bi] = d_h
+                            min_time[bi] = t_h
 
                         # Every such passage inside the threshold is an encounter: n_hill Hill radii,
                         # or a fixed distance for the Sun, which has no Hill sphere
-                        if d_h < _encounterThreshold(bname, n_hill):
-                            st["encounters"].append((bname, t_h, d_h))
+                        if d_h < thresholds[bi]:
+                            st["encounters"].append((bi, t_h, d_h))
 
-                st["prev"][bname] = (t_now, rel, rv)
+                prevs[bi] = (t_now, rel, rv)
 
     # Keep the returned reference alive until the integration ends (see _setHeartbeat)
     heartbeat_ref = _setHeartbeat(sim, heartbeat)  # noqa: F841
 
-    outputs = {name: [] for name in particle_names}
+    lean_outputs = task.get("lean_outputs", False)
+    if lean_outputs:
+        outputs = {name: {key: [] for key in LEAN_OUTPUT_KEYS} for name in particle_names}
+    else:
+        outputs = {name: [] for name in particle_names}
+
+    # The body the elements are relative to, as in extractSimParams
+    ref_object = "Earth" if reference_frame == "geocentric" else "Sun"
 
     # Integrate the simulation and save the state vectors and orbital elements. These are not time
     # steps, but the times at which the simulation state is saved.
@@ -3227,6 +3260,23 @@ def _integrateParticles(task, progress=None):
             except rb.ParticleNotFound:
                 continue
 
+            if lean_outputs:
+                orb_elem = ps[name].orbit(primary=ps[ref_object])
+                columns = outputs[name]
+                columns["t"].append(t_out)
+                columns["a"].append(orb_elem.a)
+                columns["e"].append(orb_elem.e)
+                columns["inc"].append(orb_elem.inc)
+                columns["Omega"].append(orb_elem.Omega)
+                columns["omega"].append(orb_elem.omega)
+                columns["f"].append(orb_elem.f)
+
+                if compute_moid:
+                    orb_hel = orb_elem if reference_frame == "heliocentric" else ps[name].orbit(primary=ps["Sun"])
+                    moid_object_rows[name].append((k_moid, _orbitTuple(orb_hel)))
+
+                continue
+
             state_vect_hel, orb_elem, planet_dists = extractSimParams(
                 ps, name, planet_names, reference_frame=reference_frame)
 
@@ -3260,13 +3310,13 @@ def _integrateParticles(task, progress=None):
     for name in particle_names:
         st = track[name]
         diagnostics[name] = {
-            "min_dist_au": {b: (None if not np.isfinite(st["min_dist"][b]) else st["min_dist"][b])
-                            for b in planet_names},
-            "min_time_days": {b: (None if not np.isfinite(st["min_time"][b])
-                                  else time_sign*simTimeToDays(st["min_time"][b]))
-                              for b in planet_names},
-            "encounters": [_encounterRecord(b, d, time_sign*simTimeToDays(t))
-                           for b, t, d in st["encounters"]],
+            "min_dist_au": {b: (None if not np.isfinite(st["min_dist"][bi]) else st["min_dist"][bi])
+                            for bi, b in enumerate(planet_names)},
+            "min_time_days": {b: (None if not np.isfinite(st["min_time"][bi])
+                                  else time_sign*simTimeToDays(st["min_time"][bi]))
+                              for bi, b in enumerate(planet_names)},
+            "encounters": [_encounterRecord(planet_names[bi], d, time_sign*simTimeToDays(t))
+                           for bi, t, d in st["encounters"]],
             "moid_au": (_moidSeries(moid_planet_rows, moid_object_rows[name], moid_bodies)
                         if compute_moid else None),
             "departed": st["departed"],
@@ -3277,6 +3327,10 @@ def _integrateParticles(task, progress=None):
             "fixed_step_from_days": (None if switch_time is None
                                      else time_sign*simTimeToDays(switch_time)),
         }
+
+    if lean_outputs:
+        outputs = {name: {key: np.array(values) for key, values in columns.items()}
+                   for name, columns in outputs.items()}
 
     return {"outputs": outputs, "diagnostics": diagnostics}
 
@@ -4476,7 +4530,8 @@ def _heliocentricRecord(state_vect_hel, orb, jd_tdb):
 
 
 def integrateHeliocentricBodies(names, states_hel, jd_tdb, times, ephem_source="local",
-                                integrator="ias15", dt_days=None, planets=None, sun_j2=True, gr="gr_full"):
+                                integrator="ias15", dt_days=None, planets=None, sun_j2=True, gr="gr_full",
+                                lean_outputs=False):
     """ Integrate bodies given by their heliocentric states through the same simulation the meteoroid
     is integrated in by reboundSimulate (_integrateParticles): the Sun, the planets and the Moon, the
     Earth's J2 and J4, general relativity, and the close-encounter tracking.
@@ -4495,6 +4550,7 @@ def integrateHeliocentricBodies(names, states_hel, jd_tdb, times, ephem_source="
         planets: [tuple] Return of planetStatesAtEpoch at jd_tdb, if it has already been computed.
         sun_j2: [bool] Include the Sun's J2, as reboundSimulate. Default True.
         gr: [str] General relativity model, as reboundSimulate (see GR_MODELS). Default "gr_full".
+        lean_outputs: [bool] Return the outputs as arrays of elements, as reboundSimulate. Default False.
 
     Return:
         [dict] The return of _integrateParticles, with the bodies' heliocentric outputs.
@@ -4528,6 +4584,7 @@ def integrateHeliocentricBodies(names, states_hel, jd_tdb, times, ephem_source="
         "earth_spin_axis": earthSpinAxisEcliptic(jd_tdb) if harmonicsSpinAxisSupported() else None,
         "sun_j2": sun_j2,
         "gr": gr,
+        "lean_outputs": lean_outputs,
     }
 
     return _integrateParticles(task)
@@ -5494,7 +5551,8 @@ def reboundSimulate(
         reference_frame="heliocentric", ephem_source="local", n_cpu=None,
         show_progress=True, return_diagnostics=False, random_seed=None, beta=None, integrator="ias15",
         dt_days=None, compute_megno=False, checkpoint_path=None, sun_j2=True, gr="gr_full",
-        compute_moid=True, verbose=False, state_vect_realizations=None):
+        compute_moid=True, verbose=False, state_vect_realizations=None, lean_outputs=False,
+        skip_nominal=False):
     """ Takes an state vector (or a Trajectory object), runs REBOUND and produces orbital elements for the 
     object at the end of the simulation or at the specified time.
 
@@ -5577,10 +5635,20 @@ def reboundSimulate(
         state_vect_realizations: [list] Monte Carlo realizations of state_vect at julian_date, to integrate
             instead of the ones drawn from traj (see sampleStateVectors), e.g. the realizations run back through
             the atmosphere by wmpl.MetSim.BackwardAtmIntegration.backwardStates. mc_runs is then ignored.
+        lean_outputs: [bool] If True, return each run's outputs as numpy arrays of the output times
+            and the osculating elements only (see LEAN_OUTPUT_KEYS), without the state vectors and
+            the distances to every body. With the ten bodies a full row takes 1.5 kB and a lean
+            output 60 bytes, so 1000 clones with 2000 outputs each need 3.1 GB in rows and 0.12 GB
+            in arrays. Default False.
+        skip_nominal: [bool] If True, integrate only the Monte Carlo realizations, which are the same
+            ones for the same random_seed, for a caller that has no use for the nominal solution:
+            it runs serially, before them, and takes as long as one of them on a whole core.
+            outputs is then None and the diagnostics have no entry for it. Not available with
+            compute_megno. Default False.
 
     Return:
         outputs: [list] List of outputs, each containing the time, state vector and orbital elements at that
-            time.
+            time. With lean_outputs, a dict {key: array} for the keys of LEAN_OUTPUT_KEYS instead.
         outputs_mc: [dict] {mc_name: outputs} for the Monte Carlo realizations.
         diagnostics: [dict] Only returned if return_diagnostics is True. Maps each particle name to
             its closest approaches ("min_dist_au", "min_time_days"), every close encounter
@@ -5606,6 +5674,10 @@ def reboundSimulate(
 
     if gr not in GR_MODELS:
         raise ValueError("Unknown GR model {:s}, use one of {:s}.".format(str(gr), ", ".join(GR_MODELS)))
+
+    # The MEGNO belongs to the nominal orbit
+    if skip_nominal and compute_megno:
+        raise ValueError("compute_megno needs the nominal solution, which skip_nominal leaves out.")
 
     # If the trajectory is given, override the julian_date and state_vect arguments
     if traj is not None:
@@ -5730,6 +5802,7 @@ def reboundSimulate(
             "sun_j2": sun_j2,
             "gr": gr,
             "compute_moid": compute_moid,
+            "lean_outputs": lean_outputs,
         }
 
     if verbose:
@@ -5770,20 +5843,24 @@ def reboundSimulate(
                 print("Saving each integrated orbit to the checkpoint {:s}".format(checkpoint_path))
 
     # Nominal solution, integrated in its own simulation (in the main process)
-    if obj_name in checkpoint_records:
-        nominal_result = checkpoint_records[obj_name]
+    outputs = None
+    diagnostics = {}
+    if not skip_nominal:
 
-    else:
-        progress_line = _ProgressLine(show_progress)
-        nominal_result = _integrateParticles(_make_task([state_vect_rot], [obj_name]),
-                                             progress=_spanProgress(progress_line, "Nominal orbit"))
-        progress_line.end()
+        if obj_name in checkpoint_records:
+            nominal_result = checkpoint_records[obj_name]
 
-        if checkpoint is not None:
-            checkpoint.add(obj_name, nominal_result)
+        else:
+            progress_line = _ProgressLine(show_progress)
+            nominal_result = _integrateParticles(_make_task([state_vect_rot], [obj_name]),
+                                                 progress=_spanProgress(progress_line, "Nominal orbit"))
+            progress_line.end()
 
-    outputs = nominal_result["outputs"][obj_name]
-    diagnostics = dict(nominal_result["diagnostics"])
+            if checkpoint is not None:
+                checkpoint.add(obj_name, nominal_result)
+
+        outputs = nominal_result["outputs"][obj_name]
+        diagnostics = dict(nominal_result["diagnostics"])
 
     # Monte Carlo realizations, each integrated in its own independent simulation, optionally across
     # multiple processes
