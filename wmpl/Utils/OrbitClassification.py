@@ -2238,8 +2238,8 @@ if __name__ == "__main__":
 
     verbose = not cml_args.quiet
 
-    if (cml_args.clones is None) and (cml_args.seed is not None):
-        reportError("--seed goes with --clones.")
+    if (cml_args.clones is None) and (cml_args.dynamics is None) and (cml_args.seed is not None):
+        reportError("--seed goes with --clones or --dynamics.")
 
     if cml_args.clones is not None:
 
