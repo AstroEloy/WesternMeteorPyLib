@@ -328,6 +328,13 @@ MOID_PERCENTILES = (2.5, 16, 50, 84, 97.5)
 # Bottom of the close-approach panel, in Hill radii: where two orbits cross the MOID dives towards zero
 MOID_PLOT_MIN_HILL = 1e-3
 
+# Sun passages closer than this count in the WHFast warning, although the Sun is listed out to
+# SUN_ENCOUNTER_AU: WHFast's fixed step fails only much closer in. Measured with _integrateParticles
+# and the default 0.5 d step against IAS15 over 100 yr (the Sun and five planets, gr_full, a = 1.27
+# and 2.6 AU, i = 25 deg), the error in a was 9e-4 to 1e-2 at q = 0.07 AU, 5e-6 to 6e-6 at 0.10 AU,
+# 1e-6 to 4e-6 at 0.14 AU and below 7e-7 from 0.17 AU.
+WHFAST_SUN_WARNING_AU = 0.1
+
 # Radius of the Sun in AU (IAU 2015 nominal, 695 700 km), used for impact detection
 SUN_RADIUS_AU = 695700.0/149597870.7
 
@@ -1348,7 +1355,7 @@ def formatSunPassageSummary(summary):
         summary: [dict] As returned by sunPassageSummary.
 
     Return:
-        [str] E.g. "Sun      24 perihelion passages < 0.10 AU: q = 0.0441-0.0645 AU (9.5-13.9 R_Sun),
+        [str] E.g. "Sun      24 perihelion passages < 0.20 AU: q = 0.0441-0.0645 AU (9.5-13.9 R_Sun),
             t = +3.1 d to +99.6 d".
     """
 
@@ -1357,14 +1364,6 @@ def formatSunPassageSummary(summary):
                 "Sun", summary["n"], SUN_ENCOUNTER_AU, summary["q_min_au"], summary["q_max_au"],
                 summary["q_min_au"]/SUN_RADIUS_AU, summary["q_max_au"]/SUN_RADIUS_AU,
                 formatTimeStamp(summary["first_days"]), formatTimeStamp(summary["last_days"]))
-
-
-# Sun passages closer than this count in the WHFast warning, although the Sun is listed out to
-# SUN_ENCOUNTER_AU: WHFast's fixed step fails only much closer in. Measured with _integrateParticles
-# and the default 0.5 d step against IAS15 over 100 yr (the Sun and five planets, gr_full, a = 1.27
-# and 2.6 AU, i = 25 deg), the error in a was 9e-4 to 1e-2 at q = 0.07 AU, 5e-6 to 6e-6 at 0.10 AU,
-# 1e-6 to 4e-6 at 0.14 AU and below 7e-7 from 0.17 AU.
-WHFAST_SUN_WARNING_AU = 0.1
 
 
 def whfastEncounterWarning(diagnostics, n_hill=3.0):
@@ -4950,25 +4949,26 @@ def plotParentBodyCriteria(series, labels, file_path, title=None, max_bodies=8):
 
 
 
-def integrationEpochs(jd_ref_utc, elapsed_days):
-    """ The start and end epochs of an integration in TDB, the time scale of the ephemeris and of the
-    integration, and in UTC, the scale of a trajectory's reference time (traj.jdt_ref).
 
-    The integration runs in TDB, so the end is the start in TDB plus the elapsed days; adding them to
-    the UTC reference time instead would leave the end ~69 s off (TDB - UTC in the 2020s).
+def integrationEpochs(jd_ref_utc, elapsed_days):
+    """ Compute the start and end epochs of an integration in TDB, the time scale of the ephemeris and
+        of the integration, and in UTC, the time scale of the trajectory reference time (traj.jdt_ref).
+        The end is the start in TDB plus the elapsed days, as adding them to the UTC time would put it
+        about 69 s off.
 
     Arguments:
-        jd_ref_utc: [float] Julian date of the start, in UTC.
-        elapsed_days: [float] Signed integration time in days (negative backward).
+        jd_ref_utc: [float] Julian date of the start in UTC.
+        elapsed_days: [float] Integration time (days), negative for a backward integration.
 
     Return:
-        [dict] "start_jd_utc", "start_jd_tdb", "final_jd_tdb", "final_jd_utc" and "start_utc"/"final_utc"
-            (ISO strings).
+        [dict] Julian dates "start_jd_utc", "start_jd_tdb", "final_jd_tdb" and "final_jd_utc", and the
+            UTC times as ISO strings, "start_utc" and "final_utc".
     """
 
-    # Imported here too, as the module imports astropy.time only together with REBOUND
+    # Import astropy here, as the module imports it only when REBOUND is found
     import astropy.time
 
+    # Convert the start to TDB, add the elapsed days and convert the end back to UTC
     start = astropy.time.Time(jd_ref_utc, format='jd', scale='utc')
     start_tdb = start.tdb.jd
     final = astropy.time.Time(start_tdb + elapsed_days, format='jd', scale='tdb').utc
@@ -5543,6 +5543,7 @@ def replotReboundFromResults(results, file_path=None, use_moid=True):
         clone_encounters=results.get("clone_encounters"), closest_au=results.get("closest_approaches_au"),
         closest_time_days=results.get("closest_approach_times_days"),
         moid=results.get("moid") if use_moid else None)
+
 
 
 def reboundSimulate(
@@ -6580,8 +6581,7 @@ if __name__ == "__main__":
     # Extract the final time in days
     final_sim_days = simTimeToDays(sim_outputs[-1][0])
 
-    # The start and final epochs, in TDB (the scale of the integration) and in UTC (that of the
-    #   trajectory's reference time)
+    # Compute the start and final epochs in TDB, the time scale of the integration, and in UTC
     epochs = integrationEpochs(jd_start, final_sim_days)
     final_epoch_jd = epochs["final_jd_tdb"]
 

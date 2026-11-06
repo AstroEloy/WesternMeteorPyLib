@@ -41,6 +41,7 @@ Individual functions are documented in their docstrings, and every module can be
 the larger tools live in [wmpl/Docs](wmpl/Docs):
 
  * [Solving a trajectory](wmpl/Docs/Trajectory.md) - turning multi-station observations into a trajectory pickle, which is the input to the other tools
+ * [Drag fit of the motion along a trajectory](wmpl/Docs/DragFit.md) - the drag model of the motion along a solved trajectory, sampling it by height or time for dark flight, and interpreting the ballistic coefficient
  * [REBOUND orbital integration](wmpl/Docs/REBOUND.md) - integrating a meteoroid orbit back or forward in time, close encounters and impacts, Monte Carlo clones, radiation forces and chaos indicators
  * [Dynamic mass and end of ablation](wmpl/Docs/DynamicMassFit.md) - the mass of a fireball from its deceleration, where ablation ends, Monte Carlo uncertainties, atmosphere profiles and winds, and the hand-over to a dark flight
  * [DynestyMetSim](wmpl/Dynesty/README.md) - nested-sampling fits of the erosion ablation model to a meteor light curve and dynamics
@@ -313,6 +314,12 @@ lasun = sollon.jd2SolLonJPL(jd_now)
 
 print(math.degrees(lasun), ' deg')
 ```
+
+
+## Contributing
+
+New code has to follow the [WMPL coding standard](CODING_STANDARD.md), so that it reads like the code around it.
+Pull requests that do not follow it will be asked to change before they are merged.
 
 
 ## Citations

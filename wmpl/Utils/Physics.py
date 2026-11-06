@@ -107,6 +107,23 @@ def dynamicMass(bulk_density, lat, lon, height, jd, velocity, decel, gamma=1.0, 
     return dyn_mass
 
 
+def ballisticCoeffMass(ballistic_coeff, bulk_density, gamma_a):
+    """ Calculate the mass of a body from its ballistic coefficient K = Gamma*A/(m^(1/3)*rho_m^(2/3)), the
+        coefficient of the drag equation dv/dt = -K*rho_atm*v^2. This is the dynamic mass, as
+        K = decel/(rho_atm*v^2).
+
+    Arguments:
+        ballistic_coeff: [float or ndarray] Ballistic coefficient K (m^2/kg).
+        bulk_density: [float] Bulk density of the body (kg/m^3).
+        gamma_a: [float] Product of the drag coefficient Gamma and the shape factor A.
+
+    Return:
+        [float or ndarray] Mass (kg).
+    """
+
+    return (gamma_a/(ballistic_coeff*bulk_density**(2.0/3)))**3
+
+
 def calcIntensity(mag_abs, P_0m=840.0):
     """ Calculate the radiated power (intensity) from absolute magnitudes.
 
@@ -235,8 +252,7 @@ def calcMass(time, mag_abs, velocity, tau=0.007, P_0m=840.0, lum_eff_mass=-1, v_
     if lum_eff_mass < 0 and lum_eff_mass != -1:
         raise ValueError("lum_eff_mass must be >= 0, or -1 for self-consistent iteration.")
 
-    # Constant luminous efficiency (tau given directly as a ratio). A numpy integer (e.g. a code taken
-    # from an array) is a model code like a Python int, not a constant efficiency of 100*tau %
+    # Constant luminous efficiency (tau given directly as a ratio), as a numpy integer is a model code
     if not isinstance(tau, str) and not isinstance(tau, (bool, int, np.integer)):
 
         # Constant velocity
@@ -261,12 +277,14 @@ def calcMass(time, mag_abs, velocity, tau=0.007, P_0m=840.0, lum_eff_mass=-1, v_
         lum_eff_type = int(tau)
 
     # These models are calibrated for a zero-magnitude power of 1500 W (see the P_0m docstring note),
-    # so warn if a different value is used with them
+    #   so warn if a different value is used with them
     if (lum_eff_type in [1, 2, 3, 4, 6, 7, 8]) and (P_0m != 1500.0):
         warnings.warn("The chosen luminous efficiency model (lum_eff_type={:d}) is calibrated for "
             "a zero-magnitude power of P_0m = 1500 W, but P_0m = {:g} W was given. "
-            "No correction is applied - the returned mass will be off by a factor of {:.2f} "
-            "compared to using the calibrated value.".format(lum_eff_type, P_0m, P_0m/1500.0))
+            "No correction is applied - the radiated power will be off by a factor of {:.2f} "
+            "compared to using the calibrated value, and so will the mass at a fixed luminous "
+            "efficiency (a mass-dependent efficiency iterated with lum_eff_mass=-1 changes it "
+            "further).".format(lum_eff_type, P_0m, P_0m/1500.0))
 
     # Compute the luminous efficiency using an analytical velocity-dependent function.
     from wmpl.Utils.CythonBuild import installPyximport
