@@ -1285,12 +1285,15 @@ def unsolvedFragments(traj, ecsv_paths, fragments, mc_trajs=None):
             ahead_first and ahead_last. std is None without runs.
     """
 
-    _, input_meteors = loadECSVs(ecsv_paths, no_prepare=True)
+    # Read the files as the main trajectory was solved from them
+    radec_per_point = radecPerPoint(traj)
+    _, input_meteors = loadECSVs(ecsv_paths, no_prepare=True, radec_per_point=radec_per_point)
 
     solutions = []
     for fragment in fragments:
 
-        _, meteors = loadECSVs(ecsv_paths, no_prepare=True, fragment=fragment)
+        _, meteors = loadECSVs(ecsv_paths, no_prepare=True, fragment=fragment, \
+            radec_per_point=radec_per_point)
         n_stations = len(set(str(meteor.station_id) for meteor in meteors))
 
         for meteor in meteors:
