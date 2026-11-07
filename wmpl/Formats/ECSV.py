@@ -1682,14 +1682,17 @@ def fragmentMatches(traj, ecsv_paths, fragments):
             together, that candidate can be closer than the match.
     """
 
-    _, input_meteors = loadECSVs(ecsv_paths, no_prepare=True)
+    # Read the files as the main trajectory was solved from them
+    radec_per_point = radecPerPoint(traj)
+    _, input_meteors = loadECSVs(ecsv_paths, no_prepare=True, radec_per_point=radec_per_point)
     direction = -vectNorm(traj.radiant_eci_mini)
 
     # Times and positions along the path of the points of every fragment from every station in the trajectory
     tracks, cameras = {}, {}
     for fragment in fragments:
 
-        _, meteors = loadECSVs(ecsv_paths, no_prepare=True, fragment=fragment)
+        _, meteors = loadECSVs(ecsv_paths, no_prepare=True, fragment=fragment, \
+            radec_per_point=radec_per_point)
         for meteor in meteors:
             meteor.trajectory_use = np.ones(len(meteor.time_data), dtype=bool)
 
