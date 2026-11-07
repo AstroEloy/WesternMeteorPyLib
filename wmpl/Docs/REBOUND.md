@@ -22,6 +22,7 @@ Monte Carlo clones, and can optionally include radiation forces and measure how 
 - [Parent bodies](#parent-bodies)
 - [Predictability horizon](#predictability-horizon)
 - [MOID with the planets](#moid-with-the-planets)
+- [Source regions in NEOMOD](#source-regions-in-neomod)
 - [What it writes](#what-it-writes)
 - [The orbit to use at the end](#the-orbit-to-use-at-the-end)
 - [Worked examples](#worked-examples)
@@ -151,6 +152,8 @@ python -m wmpl.Rebound.REBOUND --help
 | `--parent_dcrit KEY [KEY ...]` | D criteria for `--parent_bodies`, keys of `wmpl.Utils.Dcriteria`. Default: those the search used. |
 | `--parent_top N` | Use only the first N bodies of the file. |
 | `--no_moid` | Do not compute the MOID with the planets, which is on by default. See [MOID with the planets](#moid-with-the-planets). With `--replot`, leave it out of the figure. |
+| `--neomod [all\|final]` | The probability that the object came from each source region of the NEOMOD2 model of near-Earth objects, at every output (`all`, the default) or at the end only (`final`), for the nominal and the clones. See [Source regions in NEOMOD](#source-regions-in-neomod). |
+| `--neomod_size H\|MASS\|DIAMETER` | The size of the object for `--neomod`: its H, its mass ending in `kg` or `g`, or its diameter ending in `m`. Without it, the faintest bin of the model (H 27.75-28, bodies smaller than ~9 m). |
 | `--replot RESULTS_JSON` | Do not integrate: redraw the figure of an earlier run from its results file. The trajectory pickle is not needed. See [Redrawing the figure](#redrawing-the-figure). |
 | `--out FIGURE_PNG` | With `--replot`, where to save the figure. |
 | `--verbose` | Print the progress of the simulation. |
@@ -790,6 +793,23 @@ percentiles; the figure draws both (see [The figure](#the-figure)).
 
 ---
 
+## Source regions in NEOMOD
+
+`--neomod` gives, at every output (or with `--neomod final` at the end only), the probability that the
+object came from each of the 12 source regions of NEOMOD2 (Nesvorný et al. 2024), for the nominal
+solution and as the mean and 2.5-97.5% interval of the clones, the mean being the value to quote. The
+report gives them at the first output after the object left the Earth and at the end; the full series
+go to `rebound_neomod_sources.csv`, the figure `rebound_neomod_sources.png` and the key `"neomod"` of
+the JSON. The model file, 62 MB, is downloaded once, before the integration starts.
+
+The trajectory does not give the size of the object, on which the shares of the sources depend. Without
+`--neomod_size`, the faintest bin of the model is used (27.75 < H < 28, about 9 m), which is right for
+nearly every fireball; a larger body needs `--neomod_size`. Which NEOMOD file is used and why, the
+effect of the size and of the bins, and how the values were checked against the authors' own tool, are
+in [Source regions in NEOMOD](NEOMODSourceRegions.md).
+
+---
+
 ## What it writes
 
 All output goes into the directory containing the input pickle, under **fixed names**. Two runs on
@@ -805,6 +825,8 @@ options.
 | `rebound_checkpoint.pkl` | Only while the run is going on, or after it was cut: the orbits integrated so far. See [Long runs: memory and checkpoints](#long-runs-memory-and-checkpoints). |
 | `rebound_parent_bodies.csv` | Only with `--parent_bodies`: every D criterion between the meteoroid and every body at every output time, for the nominal solution and as the median and 2.5–97.5 percentiles of the clones. |
 | `rebound_parent_bodies.png` | Only with `--parent_bodies`: the same against time, a panel per criterion. |
+| `rebound_neomod_sources.csv` | Only with `--neomod`: the probability of each NEOMOD source at every output time, for the nominal solution and as the mean and 2.5-97.5 percentiles of the clones. |
+| `rebound_neomod_sources.png` | Only with `--neomod` (`all`): the same against time as stacked areas. |
 
 ### The figure
 
