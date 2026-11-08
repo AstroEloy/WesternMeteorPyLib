@@ -50,9 +50,10 @@ def _solve(timing_reruns):
     points = np.array([applyGravityDrop(point, t, np.linalg.norm(begin), 1.0, v0z)
         for point, t in zip(straight, times)])
 
+    # Without the filter of bad picks, which with noise-free data acts on residuals at the level of rounding
     traj = Trajectory(JDT_REF, meastype=2, max_toffset=1.0, estimate_timing_vel=True, gravity_correction=True,
         monte_carlo=False, calc_orbit=False, show_plots=False, save_results=False, verbose=False,
-        timing_reruns=timing_reruns)
+        timing_reruns=timing_reruns, filter_picks=False)
 
     for station_id, s_lat, s_lon, ele in STATIONS:
 
