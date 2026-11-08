@@ -203,6 +203,15 @@ class ConfigStruct(object):
         self.meteomod_file = os.path.join(abs_path, 'share', 'Broz+_2024_METEOMOD.tar.gz')
 
 
+        ### COORDINATES
+
+        # Legacy and incorrect conversion of J2000 coordinates without the nutation, only for reproducing old
+        #   solutions (set with WMPL_LEGACY_J2000=1, see nutationMatrix)
+        self.legacy_j2000_precession_only = (os.environ.get('WMPL_LEGACY_J2000', '0') == '1')
+
+        ###
+
+
         ### SHOWER ASSOCIATION
 
         # Jenniskens et al. (2018) shower table
