@@ -410,24 +410,33 @@ def test_acos_domain_holds_for_near_identical_orbits():
                     math.degrees(incl))
 
 
-# Array and scalar calls run the same operations, but numpy may evaluate an array with SIMD routines
-#   whose last bit differs from the scalar ones. D_V carries weights of order 1e8, so its tolerance
-#   is relative
+
+# Relative tolerance between array and scalar calls, as numpy may evaluate arrays with SIMD routines whose
+#   last bit differs and D_V carries weights of order 1e8
 ARRAY_SCALAR_RTOL = 1e-12
 
 
+
 def _pairArrays(pairs):
-    """ Turn a list of (q1, e1, i1, O1, w1, q2, e2, i2, O2, w2) pairs into the two orbits as tuples
-        of arrays, the form ELEMENT_CRITERIA takes.
+    """ Turn a list of pairs of orbits into the two orbits as tuples of arrays, the form ELEMENT_CRITERIA
+        takes.
+
+    Arguments:
+        pairs: [list] Pairs of orbits as (q1, e1, i1, O1, w1, q2, e2, i2, O2, w2) tuples.
+
+    Return:
+        (orbit1, orbit2): [tuple] Each orbit as a (q, e, i, O, w) tuple of arrays.
     """
 
+    # Make an array of every element of both orbits
     columns = [np.array(c) for c in zip(*pairs)]
 
     return tuple(columns[:5]), tuple(columns[5:])
 
 
-def test_element_criteria_accept_arrays():
-    """ An array call must return, pair by pair, what the scalar call returns. The test pairs
+
+def testElementCriteriaAcceptArrays():
+    """ Check that an array call returns, pair by pair, what the scalar call returns. The test pairs
         include ones whose nodes straddle 0/360 deg, so the D_SH and D_H branch rule is checked per
         element rather than once for the whole array.
     """
@@ -435,16 +444,19 @@ def test_element_criteria_accept_arrays():
     pairs = _orbitPairs()
     orbit1, orbit2 = _pairArrays(pairs)
 
+    # Make sure some pairs have the nodes more than 180 deg apart
     assert np.any(np.abs(orbit2[3] - orbit1[3]) > np.pi), \
         "no test pair exercised the |O2 - O1| > 180 deg branch"
 
     for key, label, func in ELEMENT_CRITERIA:
 
+        # Compare all pairs in one call
         vector = func(orbit1, orbit2)
 
         assert np.shape(vector) == (len(pairs),), \
             "{:s} did not return one value per pair".format(label)
 
+        # Compare the pairs one by one
         scalar = np.array([func(p[:5], p[5:]) for p in pairs])
 
         assert np.allclose(vector, scalar, rtol=ARRAY_SCALAR_RTOL, atol=0.0), \
@@ -452,11 +464,13 @@ def test_element_criteria_accept_arrays():
                 np.max(np.abs(vector - scalar)))
 
 
-def test_element_criteria_broadcast_one_orbit_against_many():
-    """ One orbit given as scalars against a catalogue given as arrays is the call a parent body
-        search makes, and must agree with comparing the orbit with each entry in turn.
+
+def testElementCriteriaBroadcastOneOrbitAgainstMany():
+    """ Check that one orbit given as scalars against a catalogue given as arrays, the call a parent body
+        search makes, agrees with comparing the orbit with each entry in turn.
     """
 
+    # Take the second orbits of the pairs as the catalogue, and the first orbit of the first pair
     pairs = _orbitPairs()[:500]
     _, catalogue = _pairArrays(pairs)
 
@@ -464,41 +478,47 @@ def test_element_criteria_broadcast_one_orbit_against_many():
 
     for key, label, func in ELEMENT_CRITERIA:
 
+        # Compare the orbit with the whole catalogue in one call
         vector = func(orbit, catalogue)
 
         assert np.shape(vector) == (len(pairs),), \
             "{:s} did not broadcast one orbit against the catalogue".format(label)
 
+        # Compare the orbit with each entry in turn
         scalar = np.array([func(orbit, p[5:]) for p in pairs])
 
         assert np.allclose(vector, scalar, rtol=ARRAY_SCALAR_RTOL, atol=0.0), \
             "{:s} disagreed between a broadcast and scalar calls".format(label)
 
 
-def test_element_criteria_return_scalars_for_scalars():
-    """ Making the criteria take arrays must not turn a scalar result into a 0-d array, which
-        formats and compares differently.
+
+def testElementCriteriaReturnScalarsForScalars():
+    """ Check that scalars still give scalars, not 0-d arrays, which format and compare differently.
     """
 
     pair = _orbitPairs()[0]
 
     for key, label, func in ELEMENT_CRITERIA:
 
+        # Compare one pair given as floats
         value = func(pair[:5], pair[5:])
 
         assert isinstance(value, float) and np.ndim(value) == 0, \
             "{:s} returned {!r} for a scalar pair".format(label, type(value))
 
 
-def test_DD_circular_orbits_fail_per_pair_in_arrays():
-    """ Two circular orbits leave the D_D eccentricity term undefined. Called with floats it must
-        still raise, as it always has. Called with arrays it must return nan for that pair alone,
-        so one circular pair cannot spoil a whole catalogue.
+
+def testDDCircularOrbitsFailPerPairInArrays():
+    """ Check that two circular orbits, which leave the D_D eccentricity term undefined, raise
+        ZeroDivisionError when given as floats, and give nan for that pair alone when given in arrays, so
+        one circular pair cannot spoil a whole catalogue.
     """
 
+    # Make two circular orbits
     circular_1 = (1.0, 0.0, math.radians(5.0), math.radians(30.0), math.radians(0.0))
     circular_2 = (1.2, 0.0, math.radians(7.0), math.radians(35.0), math.radians(0.0))
 
+    # Compare them as floats
     try:
         calcDD(*(circular_1 + circular_2))
         raise AssertionError("expected D_D to raise for two circular orbits given as floats")
@@ -506,6 +526,7 @@ def test_DD_circular_orbits_fail_per_pair_in_arrays():
     except ZeroDivisionError:
         pass
 
+    # Compare them in arrays, as the fourth of ten pairs
     pairs = _orbitPairs()[:10]
     pairs[3] = circular_1 + circular_2
 
@@ -518,13 +539,18 @@ def test_DD_circular_orbits_fail_per_pair_in_arrays():
     assert np.all(np.isfinite(np.delete(vector, 3))), "a circular pair spoilt the other pairs"
 
 
-def test_semi_major_axis_for_criteria_takes_arrays():
-    """ A parabolic orbit has an infinite semi-major axis whether it comes alone or in an array. """
 
+def testSemiMajorAxisForCriteriaTakesArrays():
+    """ Check that a parabolic orbit has an infinite semi-major axis whether it comes alone or in an
+        array.
+    """
+
+    # Check a parabolic and an elliptic orbit given as floats
     assert _semiMajorAxisForCriteria(1.0, 1.0) == np.inf
     assert np.ndim(_semiMajorAxisForCriteria(1.0, 0.5)) == 0
     assert _semiMajorAxisForCriteria(1.0, 0.5) == 2.0
 
+    # Check an elliptic, a parabolic and a hyperbolic orbit in arrays
     q = np.array([1.0, 0.5, 0.2])
     e = np.array([0.5, 1.0, 1.2])
 
@@ -533,6 +559,8 @@ def test_semi_major_axis_for_criteria_takes_arrays():
     assert a[0] == 2.0
     assert a[1] == np.inf
     assert abs(a[2] - (-1.0)) < 1e-12, "a hyperbolic orbit must keep its negative semi-major axis"
+
+
 
 
 if __name__ == "__main__":
@@ -548,11 +576,11 @@ if __name__ == "__main__":
         test_DH_node_sign_worked_example,
         test_rho_convention_holds_only_within_one_turn,
         test_clipped_acos_engages_only_outside_the_domain,
-        test_element_criteria_accept_arrays,
-        test_element_criteria_broadcast_one_orbit_against_many,
-        test_element_criteria_return_scalars_for_scalars,
-        test_DD_circular_orbits_fail_per_pair_in_arrays,
-        test_semi_major_axis_for_criteria_takes_arrays,
+        testElementCriteriaAcceptArrays,
+        testElementCriteriaBroadcastOneOrbitAgainstMany,
+        testElementCriteriaReturnScalarsForScalars,
+        testDDCircularOrbitsFailPerPairInArrays,
+        testSemiMajorAxisForCriteriaTakesArrays,
         ]
 
     failed = 0
