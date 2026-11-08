@@ -29,13 +29,14 @@ from PyQt5.uic import loadUi
 from wmpl.Formats.Met import loadMet
 from wmpl.Formats.ECSV import loadECSVs
 from wmpl.MetSim.GUITools import MatplotlibPopupWindow
-from wmpl.MetSim.MetSimErosion import runSimulation, Constants, zenithAngleAtSimulationBegin
+from wmpl.MetSim.MetSimErosion import runSimulation, Constants, zenithAngleAtSimulationBegin, \
+    constantsRelativeToGround, loadedConstantsRelativeToGround
 from wmpl.Trajectory.Trajectory import Trajectory, ObservedPoints, PlaneIntersection
 from wmpl.Trajectory.Orbit import calcOrbit, Orbit
 from wmpl.Utils.AtmosphereDensity import fitAtmPoly, getAtmDensity, atmDensPoly, getAtmDensityTable, \
     atmDensTable, addAtmosphereArguments, getMSISVersion, setAtmosphere
 from wmpl.Utils.Math import mergeClosePoints, findClosestPoints, vectMag, vectNorm, lineFunc, meanAngle
-from wmpl.Utils.Physics import calcMass, dynamicPressure, calcRadiatedEnergy
+from wmpl.Utils.Physics import calcMass, dynamicPressure, calcRadiatedEnergy, earthRotationSpeed
 from wmpl.Utils.Pickling import loadPickle, savePickle
 from wmpl.Utils.Plotting import saveImage
 from wmpl.Utils.TrajConversions import unixTime2JD, datetime2JD, jd2Date, geo2Cartesian, cartesian2Geo, \
@@ -156,16 +157,14 @@ class SimulationResults(object):
         ###
 
 
-        # MetSim simulates the motion relative to the air, which turns with the ground. With the Earth's rotation
-        #   along the path in the constants (see constantsRelativeToGround()), give the lengths and speeds in the
-        #   trajectory solver's inertial frame, where its observations are: the speed relative to the air is then
-        #   the speed minus v_rotation
-        self.v_rotation = getattr(self.const, "v_rotation", 0.0)
+        # Add the Earth's rotation along the path to give the lengths and speeds in the inertial frame of the
+        #   trajectory solver, as MetSim simulates the motion relative to the ground
+        self.v_rotation = getattr(self.const, 'v_rotation', 0.0)
         if self.v_rotation:
-            for name in ("brightest", "leading_frag", "main"):
-                setattr(self, name + "_length_arr", getattr(self, name + "_length_arr") \
+            for name in ('brightest', 'leading_frag', 'main'):
+                setattr(self, name + '_length_arr', getattr(self, name + '_length_arr') \
                     + self.v_rotation*self.time_arr)
-                setattr(self, name + "_vel_arr", getattr(self, name + "_vel_arr") + self.v_rotation)
+                setattr(self, name + '_vel_arr', getattr(self, name + '_vel_arr') + self.v_rotation)
 
 
     def writeCSV(self, dir_path, file_name):
@@ -193,10 +192,12 @@ class SimulationResults(object):
                   "Abs mag total, Abs mag main, Abs mag grain, " + \
                   "log10 Lum total (W), log10 Lum main (W), log10 Lum grain (W), "+\
                   "log10 Electron line density (-/m), Mass total (kg), Mass main (kg)"
+
+        # Note the frame of the lengths and speeds
         if self.v_rotation:
-            header += "\nLengths and speeds in the trajectory solver's inertial frame: subtract the Earth's " \
-                + "rotation along the path, v_rotation = {:.2f} m/s, for the speeds relative to the air".format(
-                self.v_rotation)
+            header += "\nLengths and speeds are in the inertial frame of the trajectory solver. Subtract " \
+                "the Earth's rotation along the path, v_rotation = {:.2f} m/s, for the speeds relative to " \
+                "the air.".format(self.v_rotation)
 
 
         # If the file cannot be opened, throw an error message
@@ -221,63 +222,6 @@ class SimulationResults(object):
             # Write the data
             np.savetxt(f, out_arr, fmt='%.5e', delimiter=',', newline='\n', header=header, comments="# ")
 
-
-def rotationSpeedAlongTrajectory(traj):
-    """ The speed of the Earth's rotation along a trajectory (m/s): the trajectory solver's inertial (ECI) initial
-        speed minus the one relative to the ground, as Orbit gives them (v_init - v_init_norot, the offset it also
-        takes for v_avg_norot). It is practically constant over the few seconds of a meteor. 0 without them, and for
-        a trajectory solved with fixed stations, whose speeds are already relative to the ground. """
-
-    orbit = getattr(traj, "orbit", None)
-    if (getattr(orbit, "v_init", None) is None) or (getattr(orbit, "v_init_norot", None) is None):
-        return 0.0
-
-    return orbit.v_init - orbit.v_init_norot
-
-
-def constantsRelativeToGround(const, v_rotation):
-    """ Turn const.v_init and const.zenith_angle, given in the trajectory solver's inertial (ECI) frame, into the
-        speed and zenith angle relative to the ground that MetSim simulates: drag, ablation and light act on the speed
-        relative to the air, which turns with the ground. v_rotation is kept in const, so that SimulationResults
-        gives the lengths and speeds back in the solver's frame, to be compared with its observations. The zenith
-        angle keeps the vertical speed, which the rotation, horizontal, does not change.
-
-    Arguments:
-        const: [Constants] Changed in place.
-        v_rotation: [float] The Earth's rotation along the path (m/s), see rotationSpeedAlongTrajectory().
-
-    Return:
-        const: [Constants]
-    """
-
-    v_ground = const.v_init - v_rotation
-    const.zenith_angle = np.arccos(np.clip(const.v_init*np.cos(const.zenith_angle)/v_ground, -1.0, 1.0))
-    const.v_init = v_ground
-    const.v_rotation = v_rotation
-
-    return const
-
-
-def loadedConstantsRelativeToGround(const, const_json, traj):
-    """ Constants loaded from a JSON file without v_rotation were saved before MetSim was run relative to the ground:
-        their v_init and zenith angle are in the trajectory solver's inertial frame, as the GUI and DynestyMetSim
-        took them from the trajectory. Turn them relative to the ground (constantsRelativeToGround()). Constants
-        with v_rotation are left as they are.
-
-    Return:
-        const: [Constants]
-    """
-
-    if ("v_rotation" in const_json) or ("v_rotation" in const_json.get("const", {})):
-        return const
-
-    v_rotation = rotationSpeedAlongTrajectory(traj)
-    if v_rotation:
-        print("NOTE: The constants file has no v_rotation: its v_init and zenith angle are taken as the trajectory "
-            "solver's inertial ones and simulated relative to the ground, without the Earth's rotation along the "
-            "path (v_rotation = {:.2f} m/s).".format(v_rotation))
-
-    return constantsRelativeToGround(const, v_rotation)
 
 
 class ECSVObservations(object):
@@ -3021,7 +2965,7 @@ class MetSimGUI(QMainWindow):
                 if const_json['erosion_sigma_change'] != const_json['sigma']:
                     self.erosion_different_sigma = True
 
-            # Simulate relative to the ground, also constants saved before that was done
+            # Convert constants saved with the inertial speed to the ground
             loadedConstantsRelativeToGround(self.const, const_json, self.traj)
 
             # if 'fragmentation_string' in const_json:
@@ -3073,9 +3017,8 @@ class MetSimGUI(QMainWindow):
             # account
             self.computeSimZenithAngle()
 
-            # The speed and zenith angle above are the solver's inertial ones: simulate relative to the ground, with
-            #   the lengths and speeds given back in the solver's frame
-            constantsRelativeToGround(self.const, rotationSpeedAlongTrajectory(self.traj))
+            # Convert the inertial speed and zenith angle to the ground
+            constantsRelativeToGround(self.const, earthRotationSpeed(self.traj))
 
             # Calculate the photometric mass
             _, self.const.m_init = self.calcPhotometricMass()
@@ -3350,14 +3293,15 @@ class MetSimGUI(QMainWindow):
             print("No photometry, assuming default mass:", self.const.m_init)
             return 0, self.const.m_init
 
-        # The luminous efficiency chosen in the GUI: its constant value, or the code of the velocity- and
-        #   mass-dependent model, which calcMass() evaluates at the average speed relative to the ground
+        # Use the constant luminous efficiency from the GUI
         if self.const.lum_eff_type == 0:
             tau = self.const.lum_eff/100
             print("NOTE: The mass was computed using the constant luminous efficiency defined in the GUI!")
+
+        # Pass the code of the chosen model, which calcMass() evaluates at the average ground-relative speed
         else:
             tau = int(self.const.lum_eff_type)
-            print("NOTE: The mass was computed using the luminous efficiency model chosen in the GUI "
+            print("NOTE: The mass was computed using the luminous efficiency model chosen in the GUI " \
                 "(lum_eff_type = {:d}) at the average speed relative to the ground!".format(tau))
 
         # Sort array by time
@@ -3421,8 +3365,7 @@ class MetSimGUI(QMainWindow):
         self.inputZenithAngle.setText("{:.3f}".format(np.degrees(const.zenith_angle)))
         self.inputLumEff.setText("{:.2f}".format(const.lum_eff))
         
-        # Without its signal, so that showing the previous simulation does not change the current model (nor rescale
-        #   the initial mass, see updateLumEffType()): only the user choosing a model does
+        # Block the signal so that showing the previous simulation does not change the current model
         self.lumEffComboBox.blockSignals(True)
         self.lumEffComboBox.setCurrentIndex(const.lum_eff_type)
         self.lumEffComboBox.blockSignals(False)
@@ -3541,14 +3484,21 @@ class MetSimGUI(QMainWindow):
 
 
     def updateLumEffType(self):
-        """ Update the luminous efficiency type, and rescale the initial mass by how the photometric mass changes
-            with it, as updateInitialMass() does for the constant luminous efficiency. """
+        """ Update the luminous efficiency type and rescale the initial mass by the change in the photometric
+            mass, as updateInitialMass() does for the constant luminous efficiency.
+        """
 
+        # Skip if the type did not change
         lum_eff_type = self.lumEffComboBox.currentIndex()
         if lum_eff_type == self.const.lum_eff_type:
             return
 
-        # Photometric mass with the old and the new luminous efficiency
+        # Read the edits in the other input boxes, which the refresh below would discard
+        lum_eff_type_old = self.const.lum_eff_type
+        self.readInputBoxes()
+        self.const.lum_eff_type = lum_eff_type_old
+
+        # Compute the photometric mass with the old and the new luminous efficiency
         _, photom_mass_old = self.calcPhotometricMass()
         self.const.lum_eff_type = lum_eff_type
         _, photom_mass_new = self.calcPhotometricMass()
@@ -3556,7 +3506,7 @@ class MetSimGUI(QMainWindow):
         # Enable/disable the constant tau box (index 0 = constant tau)
         self.inputLumEff.setDisabled(self.const.lum_eff_type != 0)
 
-        # Rescale the initial mass (without photometry both are the initial mass, which stays)
+        # Rescale the initial mass, which does not change without photometry
         self.const.m_init *= photom_mass_new/photom_mass_old
 
         self.updateInputBoxes()
@@ -4586,9 +4536,9 @@ class MetSimGUI(QMainWindow):
         self.lagPlot.canvas.figure.clear()
 
 
-        # Update the observed initial velocity label, relative to the ground as the simulated one, and inertial
-        v_rotation = getattr(self.const, "v_rotation", 0.0)
-        self.vInitObsLabel.setText("Vinit obs = {:.3f} km/s ({:.3f} ECI)".format(
+        # Update the observed initial velocity label, relative to the ground and inertial
+        v_rotation = getattr(self.const, 'v_rotation', 0.0)
+        self.vInitObsLabel.setText("Vinit obs = {:.3f} km/s ({:.3f} ECI)".format( \
             (self.traj.orbit.v_init - v_rotation)/1000, self.traj.orbit.v_init/1000))
 
 
@@ -6197,9 +6147,8 @@ class MetSimGUI(QMainWindow):
     def saveUpdatedOrbit(self):
         """ Save updated orbit and trajectory to file. """
 
-        # Compute the difference between the model and the measured initial velocity, both in the solver's inertial
-        #   (ECI) frame: the model's is relative to the ground, plus the Earth's rotation along the path
-        v_init_diff = self.const.v_init + getattr(self.const, "v_rotation", 0.0) - self.traj.orbit.v_init
+        # Compute the difference between the model and the measured initial velocity in the inertial frame
+        v_init_diff = self.const.v_init + getattr(self.const, 'v_rotation', 0.0) - self.traj.orbit.v_init
 
         # Recompute the orbit with an increased initial velocity
         # Reuse the same frame convention (moving vs fixed stations) that the original orbit solve used,
