@@ -757,6 +757,28 @@ def numStationsNotIgnored(observations):
 
 
 
+def dropTimeOrigin(observations):
+    """ Find the time from which the gravity drop is computed: the first time of the stations which are used.
+        A station which is not used, e.g. because its clock is far off, does not set it.
+
+    Arguments:
+        observations: [list] A list of ObservedPoints objects.
+
+    Return:
+        [float] Time of the beginning of the meteor (s), the first time of all stations if none is used.
+    """
+
+    times = [obs.time_data[0] for obs in observations if not obs.ignore_station]
+
+    # Take all stations if none is used
+    if not times:
+        times = [obs.time_data[0] for obs in observations]
+
+
+    return min(times)
+
+
+
 def gravityDropReference(observations, state_vect, radiant_eci, v_init=None):
     """ Compute the beginning point of the trajectory, from which the gravity drop is computed.
 
@@ -797,7 +819,7 @@ def gravityDropReference(observations, state_vect, radiant_eci, v_init=None):
     radiant_eci = vectNorm(radiant_eci)
 
     # Find the earliest time, from which the drop is computed
-    t0 = min([obs.time_data[0] for obs in observations])
+    t0 = dropTimeOrigin(observations)
 
     dist_list = []
     for obs, i in first_picks:
@@ -1152,7 +1174,7 @@ def angleSumMeasurements2Line(observations, state_vect, radiant_eci, weights=Non
     radiant_eci = np.ascontiguousarray(radiant_eci)
 
     # Find the earliest point in time
-    t0 = min([obs.time_data[0] for obs in observations])
+    t0 = dropTimeOrigin(observations)
 
     # Compute the model point modified due to gravity, assuming zero vertical velocity if it is not given
     if v0z is None:
@@ -4095,7 +4117,7 @@ class Trajectory(object):
         _, r0 = gravityDropReference(observations, state_vect, radiant_eci, v_init=self.v_init)
 
         # Time of the beginning of the meteor, from which the drop of a decelerating meteor is scaled
-        t0 = min([obs.time_data[0] for obs in observations])
+        t0 = dropTimeOrigin(observations)
 
         # Motion along the line for the free fall of the meteor from the line
         free_fall = self.gravityFreeFall()
@@ -4173,7 +4195,7 @@ class Trajectory(object):
         """
 
         # Same reference time, beginning point and free fall as the line-of-sight fit
-        t0 = min([obs.time_data[0] for obs in observations])
+        t0 = dropTimeOrigin(observations)
         if gravity:
             r0 = self.gravity_r0
             if r0 is None:
@@ -4987,7 +5009,7 @@ class Trajectory(object):
         """
 
         # Same reference time and beginning point as the line-of-sight fit
-        t0 = min([obs.time_data[0] for obs in observations])
+        t0 = dropTimeOrigin(observations)
         r0 = self.gravity_r0
         if r0 is None:
             _, r0 = gravityDropReference(observations, state_vect, radiant_eci, v_init=self.v_init)
@@ -5070,7 +5092,7 @@ class Trajectory(object):
         # Or take the lengths calcVelocity computed, with the times from the beginning of the meteor
         else:
 
-            t0 = min([obs.time_data[0] for obs in observations])
+            t0 = dropTimeOrigin(observations)
             used = [obs for obs in observations if (not obs.ignore_station) and np.any(obs.ignore_list == 0) \
                 and (getattr(obs, 'state_vect_dist', None) is not None)]
             if not used:
@@ -5188,7 +5210,7 @@ class Trajectory(object):
         ### Compute parameters for gravity drop ###
 
         # Determine the first time
-        t0 = min([obs.time_data[0] for obs in observations])
+        t0 = dropTimeOrigin(observations)
 
         # Beginning point for the gravity drop, and the vertical velocity
         eci0, r0 = gravityDropReference(observations, state_vect, radiant_eci, v_init=self.v_init)
@@ -5374,7 +5396,7 @@ class Trajectory(object):
         ### Compute parameters for gravity drop ###
 
         # Determine the first time of observation
-        t0 = min([obs.time_data[0] for obs in observations])
+        t0 = dropTimeOrigin(observations)
 
         # Beginning point for the gravity drop, and the vertical velocity
         eci0, r0 = gravityDropReference(observations, state_vect, radiant_eci, v_init=self.v_init)
