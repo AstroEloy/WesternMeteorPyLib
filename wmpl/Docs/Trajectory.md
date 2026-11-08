@@ -348,6 +348,6 @@ and the median error of the positions falls from 0.9 to 0.3 m.
 - With the timing offsets estimated, the displacement also moves the lengths, so the offsets and the initial
   velocity can change too, when the stations see different parts of a fireball.
 - A decelerating meteor needs two more fits of the line in each pass with the drop, and a better fit can
-  reject more picks and solve the trajectory again: Winchcombe takes 16 s instead of 5.5 s.
+  reject more picks and solve the trajectory again: Winchcombe takes 4.2 s instead of 1.4 s.
 - Winds, of tens of m/s at the heights of meteors, are not included. They would add to the velocity of the
   air.
