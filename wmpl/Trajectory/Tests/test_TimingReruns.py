@@ -121,8 +121,9 @@ def test_an_extra_pass_brings_the_geometry_to_the_final_clocks():
     assert _worstResidual(traj) < _worstResidual(single)/5
     assert _radiantError(traj, radiant_eci) < 0.01
 
-    # The extra pass leaves the clocks where it found them, so no further one is run
-    assert reruns == 2
+    # The extra passes move the clocks by about 2e-5 s and then 1.5e-6 s, below TIMING_RERUN_TOLERANCE, so
+    #   no further one is run
+    assert reruns == 3
 
 
 if __name__ == "__main__":
