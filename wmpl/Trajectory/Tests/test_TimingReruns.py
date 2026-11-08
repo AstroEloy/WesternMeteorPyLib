@@ -8,7 +8,8 @@ moves the other three stations by 0.14 m.
 
 The tests drop a noise-free trajectory with applyGravityDrop, as the solver models it, observe it from four
 stations with their clocks set exactly, as azimuth/elevation at each point's own time, and solve with the
-timing estimated.
+timing estimated. The solver drops the meteor by its free fall from the line by default (#195), so they solve
+with gravity_free_fall=False, which keeps applyGravityDrop.
 
 Run with pytest:
     python -m pytest wmpl/Trajectory/Tests/test_TimingReruns.py -v
@@ -53,7 +54,7 @@ def _solve(timing_reruns):
     # Without the filter of bad picks, which with noise-free data acts on residuals at the level of rounding
     traj = Trajectory(JDT_REF, meastype=2, max_toffset=1.0, estimate_timing_vel=True, gravity_correction=True,
         monte_carlo=False, calc_orbit=False, show_plots=False, save_results=False, verbose=False,
-        timing_reruns=timing_reruns, filter_picks=False)
+        timing_reruns=timing_reruns, filter_picks=False, gravity_free_fall=False)
 
     for station_id, s_lat, s_lon, ele in STATIONS:
 
