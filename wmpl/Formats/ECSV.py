@@ -76,9 +76,9 @@ def loadECSVs(ecsv_paths, no_prepare=False, fragment=0, flares=False, radec_per_
             points of the main fragment in its file, in time.
             The minimum number of points of an observation does not apply.
         radec_per_point: [bool] Have the solver convert each point's R.A./Dec. back to azimuth/altitude at
-            that point's own time, at which they were computed from the file. True by default. False
-            reproduces solutions from before this option existed, which converted them all at the reference
-            time and rotated each line of sight by the Earth's rotation since then.
+            that point's own time, at which they were computed from the file. True by default. False is
+            incorrect and only for reproducing solutions from before this option existed: it converts them
+            all at the reference time, which rotates each line of sight by the Earth's rotation since then.
     
     """
 
@@ -2614,7 +2614,7 @@ if __name__ == "__main__":
         action="store_true")
 
     arg_parser.add_argument('--radec_at_ref', \
-        help="Convert every point's R.A./Dec. to azimuth/altitude at the reference time, as before this option existed, instead of at the time each was computed. Only to reproduce older solutions: it rotates each line of sight by the Earth's rotation since the reference time.", \
+        help="Legacy and incorrect, only to reproduce older solutions. Convert every point's R.A./Dec. to azimuth/altitude at the reference time, as before this option existed, instead of at the time each was computed, which rotates each line of sight by the Earth's rotation since the reference time.", \
         action="store_true")
 
     # Parse the command line arguments
