@@ -20,6 +20,9 @@ import numpy as np
 import scipy
 import scipy.stats
 import matplotlib.pyplot as plt
+import matplotlib.patheffects as patheffects
+from matplotlib.ticker import FuncFormatter, MaxNLocator, MultipleLocator, ScalarFormatter
+from matplotlib.lines import Line2D
 
 from jplephem.spk import SPK
 
@@ -242,6 +245,9 @@ HILL_RADII_AU = {
     "Neptune": 0.776641,  # a = 30.103658 AU
 }
 
+# Order of the bodies in the figure legends, from the Sun out
+PLANET_ORDER = ["Sun", "Mercury", "Venus", "Earth", "Luna", "Mars", "Jupiter", "Saturn", "Uranus", "Neptune"]
+
 # The Sun has no Hill sphere, so a close approach to it is flagged by distance instead: a perihelion
 # passage closer than this is listed with the other close encounters. 0.2 AU is the limit of the
 # Sun-approaching orbital class of Borovicka et al. (2005, Icarus 174, 15), the one meteor studies
@@ -261,6 +267,9 @@ A_JUPITER_TISSERAND = 5.204267
 # and 2.6 AU, i = 25 deg), the error in a was 9e-4 to 1e-2 at q = 0.07 AU, 5e-6 to 6e-6 at 0.10 AU,
 # 1e-6 to 4e-6 at 0.14 AU and below 7e-7 from 0.17 AU.
 WHFAST_SUN_WARNING_AU = 0.1
+
+# Hill radii beyond which a body that the object never came closer to is left out of the approaches panel
+APPROACH_MAX_HILL = 100.0
 
 # Radius of the Sun in AU (IAU 2015 nominal, 695 700 km), used for impact detection
 SUN_RADIUS_AU = 695700.0/149597870.7
@@ -841,6 +850,412 @@ def whfastEncounterWarning(diagnostics, n_hill=3.0):
             "flybys inside 0.1 R_Hill; an orbit with q = 0.07 AU was ejected within 100 yr at the "
             "default 0.5 d step). Rerun with --integrator trace or ias15.".format(
                 n_encounters, n_hill, WHFAST_SUN_WARNING_AU))
+
+
+# Fewest clones that run the whole span for a representative orbit to be chosen among them
+REPRESENTATIVE_MIN_CLONES = 10
+
+
+def orbitVectors(a, e, inc, Omega, omega):
+    """ The angular momentum and eccentricity vectors of orbits (the Milankovitch elements), six numbers
+    per orbit: sqrt(p) times the unit normal of the orbital plane, with p = a(1 - e^2) the semi-latus
+    rectum (the angular momentum is sqrt(GM p)), and e times the unit vector towards the perihelion, in
+    the frame of the elements. They fix the size, the shape and the orientation of the orbit, but not
+    where the body is on it. Unlike the angles they do not wrap at 360 deg, and they stay defined where
+    the node or the perihelion is not (i = 0, e = 0) and for hyperbolic orbits.
+
+    Arguments:
+        a, e, inc, Omega, omega: [float or ndarray] The elements, the angles in radians, of any shapes
+            that broadcast together.
+
+    Return:
+        [ndarray] Shape (..., 6): the angular momentum vector, then the eccentricity vector.
+    """
+
+    a, e, inc, Omega, omega = np.broadcast_arrays(*(np.asarray(x, dtype=float) \
+                                                    for x in (a, e, inc, Omega, omega)))
+
+    h = np.sqrt(a*(1 - e**2))[..., None]*np.stack( \
+        [np.sin(inc)*np.sin(Omega), -np.sin(inc)*np.cos(Omega), np.cos(inc)], axis=-1)
+    to_peri = np.stack([np.cos(omega)*np.cos(Omega) - np.sin(omega)*np.sin(Omega)*np.cos(inc), \
+                        np.cos(omega)*np.sin(Omega) + np.sin(omega)*np.cos(Omega)*np.cos(inc), \
+                        np.sin(omega)*np.sin(inc)], axis=-1)
+
+    return np.concatenate([h, e[..., None]*to_peri], axis=-1)
+
+
+
+def _spreadUnits(vectors):
+    """ The transform that measures orbit vectors (see orbitVectors) in units of the clones' own spread.
+
+    The clones' vectors are taken from their mean, and the direction normal to the surface h.e = 0, on
+    which every orbit lies, is left out: along it the clones spread only through the curvature of the
+    surface, so scaling it to unit spread would blow up a difference of second order. Each principal
+    axis of the covariance of the other five directions is then scaled by its standard deviation, so
+    that the clones have a unit covariance: a distance is a Mahalanobis distance.
+
+    Arguments:
+        vectors: [ndarray] Shape (n, 6), the orbit vectors of the clones.
+
+    Return:
+        (centre, matrix): z = (x - centre) @ matrix are the coordinates of the orbit vectors x, or None if
+            the clones do not spread.
+    """
+
+    centre = vectors.mean(axis=0)
+    normal = np.concatenate([centre[3:], centre[:3]])
+    normal /= np.linalg.norm(normal)
+    basis = np.linalg.svd(np.eye(6) - np.outer(normal, normal))[0][:, :5]
+
+    var, axes = np.linalg.eigh(np.atleast_2d(np.cov(((vectors - centre) @ basis).T)))
+    if not var.max() > 0:
+        return None
+    keep = var > var.max()*1e-14
+
+    return centre, basis @ (axes[:, keep]/np.sqrt(var[keep]))
+
+
+
+def _distanceSums(z, z_clones, block=1000):
+    """ For each row of z, the sum of its distances to the rows of z_clones, in blocks of rows so that
+    a few thousand clones need little memory. """
+
+    norms = (z_clones**2).sum(axis=1)
+    sums = np.empty(len(z))
+    for s in range(0, len(z), block):
+        zz = z[s:s + block]
+        d2 = (zz**2).sum(axis=1)[:, None] + norms[None, :] - 2*zz @ z_clones.T
+        sums[s:s + block] = np.sqrt(np.maximum(d2, 0)).sum(axis=1)
+
+    return sums
+
+
+
+def _orbitArrays(orbits):
+    """ a, e, inc, Omega, omega and f of a list of REBOUND orbits, as arrays. """
+
+    return tuple(np.array([getattr(o, key) for o in orbits], dtype=float) \
+                 for key in ("a", "e", "inc", "Omega", "omega", "f"))
+
+
+
+def _cloneSpread(orbits):
+    """ The clones' spread in each element as in the report of the final elements: 1 sigma from the
+    95% interval (the circular standard deviation for the angles), the interval (about the circular
+    mean for the angles, see _circularInterval) and the median (about the circular mean for the
+    angles). Lengths in AU, angles in degrees, keyed as the elements of representativeOrbit. """
+
+    a, e, inc, Omega, omega, f = _orbitArrays(orbits)
+    spread = {}
+    for key, x in (("a_au", a), ("q_au", a*(1 - e)), ("e", e), ("incl_deg", np.degrees(inc))):
+        lo, med, hi = np.percentile(x, [2.5, 50, 97.5])
+        spread[key] = {"median": float(med), "sigma": float((hi - lo)/2.0/1.96), \
+                       "ci95": [float(lo), float(hi)]}
+    for key, x in (("peri_deg", omega), ("node_deg", Omega), ("varpi_deg", Omega + omega), ("f_deg", f)):
+        med = _circularPercentiles(np.degrees(x)[:, None], [50])[0, 0] % 360.0
+        spread[key] = {"median": float(med), "sigma": float(np.degrees(scipy.stats.circstd(x))), \
+                       "ci95": [float(np.degrees(v)) for v in _circularInterval(x)]}
+
+    return spread
+
+
+
+def _orbitElements(orbit):
+    """ The elements of a REBOUND orbit, lengths in AU and angles in degrees, keyed as in
+    representativeOrbit. """
+
+    return {"a_au": float(orbit.a), "q_au": float(orbit.a*(1 - orbit.e)), "e": float(orbit.e), \
+            "incl_deg": float(np.degrees(orbit.inc)), "peri_deg": float(np.degrees(orbit.omega) % 360.0), \
+            "node_deg": float(np.degrees(orbit.Omega) % 360.0), \
+            "varpi_deg": float(np.degrees(orbit.Omega + orbit.omega) % 360.0), \
+            "f_deg": float(np.degrees(orbit.f) % 360.0)}
+
+
+
+def _centralityRanks(vectors, others=None):
+    """ For each clone, and for each of the other orbits, the share of the clones more central than it:
+    0 for the clones' medoid, about one half for a typical clone. A clone's centrality is the sum of its
+    distances to the clones in units of their spread (see _spreadUnits).
+
+    Arguments:
+        vectors: [ndarray] Shape (n, 6), the orbit vectors of the clones (see orbitVectors).
+
+    Keyword arguments:
+        others: [ndarray] Shape (m, 6), orbit vectors of other orbits to rank among the clones, e.g. the
+            nominal's. Default None.
+
+    Return:
+        (sums, ranks, other_ranks): the clones' sums of distances, their ranks, and the other orbits'
+            ranks (None without others), or None if the clones do not spread.
+    """
+
+    units = _spreadUnits(vectors)
+    if units is None:
+        return None
+    centre, matrix = units
+
+    z = (vectors - centre) @ matrix
+    sums = _distanceSums(z, z)
+
+    # Every other clone more central than the clone itself
+    order = np.sort(sums)
+    ranks = (np.searchsorted(order, sums, side="left"))/max(len(sums) - 1, 1)
+
+    other_ranks = None
+    if others is not None:
+        other_sums = _distanceSums((np.atleast_2d(others) - centre) @ matrix, z)
+        other_ranks = np.searchsorted(order, other_sums, side="left")/len(sums)
+
+    return sums, ranks, other_ranks
+
+
+
+def representativeOrbit(sim_outputs, sim_outputs_mc):
+    """ The clone that represents the clones at the end of the run: their median in the space of the
+    orbits, taken among the clones themselves so that it is a real orbit.
+
+    Once the clones have spread, the nominal orbit is one realization among them, no more likely than any
+    of them. Nor do the medians of the elements taken one by
+    one make an orbit: they come from different clones, so that a(1 - e) is not the median q, and
+    together they may fit no clone. The representative clone is the medoid instead: the clone with the
+    smallest sum of distances to all the others, in the space of their orbits (the angular momentum and
+    eccentricity vectors, see orbitVectors), each direction in units of the clones' spread along it (see
+    _spreadUnits). In one dimension the medoid is the median; here it is the median corrected for the
+    spread in each direction and for the correlations between the elements. Where the body is on its
+    orbit is left out, since the clones spread along the whole orbit long before their orbits do.
+
+    Being a clone, it is a trajectory of the equations of motion from a state drawn from the
+    uncertainty of the measurement. It is chosen at the end only: chaos keeps any one trajectory from
+    staying the most central at every time.
+
+    Arguments:
+        sim_outputs: [list] Outputs of the nominal solution (see reboundSimulate).
+        sim_outputs_mc: [dict] {name: outputs} of the clones.
+
+    Return:
+        [dict] or None with fewer than REPRESENTATIVE_MIN_CLONES clones over the whole span, or if they
+        do not spread. The ranks are the share of the clones more central than an orbit (see
+        _centralityRanks): {
+            "clone":         name of the representative clone,
+            "n_clones":      clones it was chosen among (those that ran the whole span),
+            "time_days":     time of the end of the run,
+            "elements":      its elements there: "a_au", "q_au", "e", "incl_deg", "peri_deg", "node_deg",
+                             "varpi_deg" (the longitude of the perihelion, node + peri) and "f_deg",
+            "outside_ci95":  the elements of the representative outside the clones' 95% CI of each
+                             taken alone (see the report: the orbit is central as a whole),
+            "clones":        the clones' spread there (see _cloneSpread),
+            "nominal_rank":  rank of the nominal orbit at the end,
+            "start_sigma":   Mahalanobis distance of the representative's initial state from the
+                             nominal's, in the spread of the clones' initial states, or None without
+                             the state vectors in the outputs,
+            "start_dof":     dimensions of that spread,
+            "start_closer":  share of draws from the measurement's normal distribution closer to the
+                             nominal than the representative (chi-square with start_dof dimensions),
+        }
+    """
+
+    n_out = len(sim_outputs)
+    full = {name: rows for name, rows in sim_outputs_mc.items() if len(rows) == n_out}
+    if len(full) < REPRESENTATIVE_MIN_CLONES:
+        return None
+    names = list(full)
+
+    def vectorsAt(k):
+        """ The orbit vectors of the clones at output k, and which of them are finite. """
+        a, e, inc, Omega, omega, _ = _orbitArrays([full[name][k][2] for name in names])
+        v = orbitVectors(a, e, inc, Omega, omega)
+        return v, np.isfinite(v).all(axis=1)
+
+    vectors, ok = vectorsAt(n_out - 1)
+    if ok.sum() < REPRESENTATIVE_MIN_CLONES:
+        return None
+    nominal_orbit = sim_outputs[-1][2]
+    nominal_vector = orbitVectors(nominal_orbit.a, nominal_orbit.e, nominal_orbit.inc, nominal_orbit.Omega, \
+                                  nominal_orbit.omega)[None, :]
+    finite_nominal = bool(np.isfinite(nominal_vector).all())
+    ranked = _centralityRanks(vectors[ok], nominal_vector if finite_nominal else None)
+    if ranked is None:
+        return None
+    sums, _, nominal_rank = ranked
+
+    kept = [name for name, good in zip(names, ok) if good]
+    rep = kept[int(np.argmin(sums))]
+    rep_rows = full[rep]
+
+    result = {"clone": rep, "n_clones": len(kept), "time_days": float(simTimeToDays(sim_outputs[-1][0])), \
+              "elements": _orbitElements(rep_rows[-1][2]), \
+              "clones": _cloneSpread([full[name][-1][2] for name in kept]), \
+              "nominal_rank": float(nominal_rank[0]) if finite_nominal else None, "outside_ci95": [], \
+              "start_sigma": None, "start_dof": None, "start_closer": None}
+
+    # Find the elements in which the representative is not central taken alone, leaving out the anomaly
+    for key, value in result["elements"].items():
+        if key == "f_deg":
+            continue
+        lo, hi = result["clones"][key]["ci95"]
+        if key in ("peri_deg", "node_deg", "varpi_deg", "f_deg"):
+            # Within the arc from lo to hi, which runs through 0 when lo > hi
+            inside = ((value - lo) % 360.0) <= ((hi - lo) % 360.0)
+        else:
+            inside = lo <= value <= hi
+        if not inside:
+            result["outside_ci95"].append(key)
+
+    # How far from the nominal the representative started, in the spread of the clones' initial states
+    #   (as offsets from the nominal's state, so that the small spread of the positions keeps its digits)
+    if all(rows[0][1] is not None for rows in full.values()) and (sim_outputs[0][1] is not None):
+        start_nominal = np.array(sim_outputs[0][1], dtype=float)
+        offsets = np.array([full[name][0][1] for name in kept], dtype=float) - start_nominal
+        var, axes = np.linalg.eigh(np.atleast_2d(np.cov(offsets.T)))
+        if var.max() > 0:
+            keep = var > var.max()*1e-14
+            start = ((np.array(rep_rows[0][1], dtype=float) - start_nominal) @ axes[:, keep]) \
+                /np.sqrt(var[keep])
+            result["start_sigma"] = float(np.sqrt((start**2).sum()))
+            result["start_dof"] = int(keep.sum())
+            result["start_closer"] = float(scipy.stats.chi2.cdf(result["start_sigma"]**2, keep.sum()))
+
+    return result
+
+
+
+def _elementLines(values, spread, dist_unit_multiplier=1.0, length_units="AU", nominal=True):
+    """ Report lines of one orbit's elements with the clones' spread: "value +/- 1 sigma [95% CI]" for
+    the nominal orbit, as in the final elements, or "value   median [95% CI]" for a clone. """
+
+    lines = []
+    for label, key, unit in (("a", "a_au", length_units), ("q", "q_au", length_units), ("e", "e", ""), \
+        ("i", "incl_deg", "deg"), ("peri", "peri_deg", "deg"), ("node", "node_deg", "deg"), \
+        ("varpi", "varpi_deg", "deg"), ("f", "f_deg", "deg")):
+
+        scale = dist_unit_multiplier if key.endswith("_au") else 1.0
+        s = spread[key]
+        lo, hi = s["ci95"][0]*scale, s["ci95"][1]*scale
+        if nominal:
+            text = "{:>13.6f} +/- {:.6f} [{:10.6f}, {:10.6f}]".format(values[key]*scale, \
+                s["sigma"]*scale, lo, hi)
+        else:
+            text = "{:>13.6f}   {:>13.6f} [{:10.6f}, {:10.6f}]".format(values[key]*scale, \
+                s["median"]*scale, lo, hi)
+        across = " (across 0)" if key.endswith("_deg") and key != "incl_deg" and lo > hi else ""
+        lines.append("  {:<5s}= {:s}{:s}{:s}".format(label, text, "  " + unit if unit else "", across))
+
+    return lines
+
+
+
+def lyapunovTimeToQuote(megno):
+    """ The Lyapunov time to quote: the median over the clones if they have one, as the nominal orbit is
+    one draw among them, or else the time of the nominal orbit.
+
+    Arguments:
+        megno: [dict] MEGNO result with its verdict, as reboundSimulate stores it, or None.
+
+    Return:
+        (tau, text): [tuple] The time (years) and where it comes from, or (None, None) without one.
+    """
+
+    if megno is None:
+        return None, None
+
+    clones = megno.get("clones") or {}
+    if clones.get("lyapunov_time_median_years") is not None:
+        return clones["lyapunov_time_median_years"], "median of the clones"
+
+    tau = (megno.get("verdict") or {}).get("lyapunov_time_years")
+    if tau is not None:
+        return tau, "nominal orbit"
+
+    return None, None
+
+
+
+def _finalElementsWarningLines(lyapunov_years, span_days, above=False):
+    """ The warning on the final elements of the nominal orbit when the run is longer than the Lyapunov
+    time: their central values are one realization among the clones, not a representative orbit, while
+    their intervals, the clones' spread, still hold. No lines otherwise.
+
+    Arguments:
+        lyapunov_years: [float] Lyapunov time (see lyapunovTimeToQuote), or None.
+        span_days: [float] Span of the run (days).
+
+    Keyword arguments:
+        above: [bool] The lines follow the elements instead of preceding them. Default False.
+
+    Return:
+        [list] Lines of text.
+    """
+
+    if (lyapunov_years is None) or (abs(span_days) <= 365.25*lyapunov_years):
+        return []
+
+    return ["WARNING: the run is longer than the Lyapunov time (~{:.0f} years). The values {:s} are the " \
+        "nominal orbit's".format(lyapunov_years, "above" if above else "below"), \
+        "(not a median), one realization among the clones: they do not represent the orbit at the end. " \
+        "The intervals,", \
+        "the clones' spread, do. For a real orbit that represents the clones, see the representative " \
+        "orbit below."]
+
+
+
+def _representativeReportLines(rep, dist_unit_multiplier=1.0, length_units="AU"):
+    """ Report lines on the representative clone at the end of the run (see representativeOrbit).
+
+    Arguments:
+        rep: [dict] Return of representativeOrbit, or None.
+
+    Keyword arguments:
+        dist_unit_multiplier: [float] Factor from AU to the length unit of a and q. Default 1.
+        length_units: [str] Name of that unit. Default "AU".
+
+    Return:
+        [list] Lines of text, none without a representative.
+    """
+
+    lines = []
+    nominal_rank = None if rep is None else rep.get("nominal_rank")
+
+    if rep is not None:
+
+        when = "back" if rep["time_days"] < 0 else "after the start"
+        lines += ["Representative orbit: clone {:s}, chosen at the end of the run only ({:s} {:s}).".format( \
+            rep["clone"], _spanText(rep["time_days"]), when), \
+            "How: the orbits of the {:d} clones (their size, shape and orientation, not where the body is " \
+            "on them)".format(rep["n_clones"]), \
+            "are compared two by two, each element in units of the clones' spread, and the representative " \
+            "is the", \
+            "clone with the smallest sum of distances to all the others: the median of the clones, but a " \
+            "real orbit.", \
+            "{:>22s}{:>16s} {:s}".format("clone", "clones: median", "[95% CI]")]
+        lines += _elementLines(rep["elements"], rep["clones"], dist_unit_multiplier, length_units, \
+            nominal=False)
+
+        # Say which elements are outside the clones' interval taken alone
+        outside = rep.get("outside_ci95") or []
+        if outside:
+            labels = {"a_au": "a", "q_au": "q", "e": "e", "incl_deg": "i", "peri_deg": "peri", \
+                "node_deg": "node", "varpi_deg": "varpi", "f_deg": "f"}
+            lines.append("Its {:s} {:s} outside the clones' 95% CI taken alone: it is the orbit as a whole " \
+                "that is central.".format(", ".join(labels[k] for k in outside), \
+                "is" if len(outside) == 1 else "are"))
+            lo_i, hi_i = rep["clones"]["incl_deg"]["ci95"]
+            if lo_i < hi_i - lo_i:
+                lines.append("Here i is small next to its spread: i is the tilt of the orbit plane " \
+                    "whatever its direction, so the")
+                lines.append("median i is not the tilt of the central plane, and node and peri are not " \
+                    "defined on their own, only varpi.")
+
+        if rep.get("start_sigma") is not None:
+            lines.append("It is a real trajectory, from an initial state {:.1f} sigma from the nominal's " \
+                "({:d}-D: {:.0f}% of the draws".format(rep["start_sigma"], rep["start_dof"], \
+                100*rep["start_closer"]))
+            lines.append("from the measurement are closer to the nominal).")
+
+        if nominal_rank is not None:
+            lines.append("At the end {:.0f}% of the clones are more central than the nominal orbit " \
+                "(about 50% for a typical clone).".format(100*nominal_rank))
+
+    return lines
 
 
 def estimateLyapunovFromMC(sim_outputs, sim_outputs_mc):
@@ -1958,6 +2373,10 @@ def _integrateParticles(task):
     return {"outputs": outputs, "diagnostics": diagnostics}
 
 
+# Size of the MEGNO deviation above which it is rescaled to unit length at an output (see computeMegno)
+MEGNO_RESCALE_ABOVE = 1e8
+
+
 def computeMegno(task, seed=1):
     """ MEGNO of the integrated object's orbit, from a purely gravitational integration.
 
@@ -1983,6 +2402,13 @@ def computeMegno(task, seed=1):
     handles the object's departure from the Earth and supports variational equations (TRACE does
     not; WHFast cannot resolve the departure).
 
+    The deviation is rescaled to unit length at an output once it is larger than MEGNO_RESCALE_ABOVE,
+    which is small on purpose. IAS15 keeps the round-off of its compensated summation (csx, csv) across
+    steps, also for the variational particles, at the scale they had, so a rescale adds about this limit
+    x 1e-16 to a unit vector. The measured jump of ln|delta| at a rescale was 5e-9 at 1e8, 2e-5 at 1e12,
+    0.6 at 1e16 and 8 at 1e20, which shortened the Lyapunov time by 20-25% over 21 orbits in 2000-4000
+    years.
+
     Arguments:
         task: [dict] An _integrateParticles task. Only its first particle is used.
 
@@ -1994,6 +2420,10 @@ def computeMegno(task, seed=1):
             "times_days":   [list] output times in days (as in the task),
             "megno":        [list] <Y> at each output time,
             "a_au":         [list] heliocentric osculating semi-major axis at each output time,
+            "ln_delta":     [list] ln|delta| of the deviation at each output time, from ln|delta| = 0
+                            at the start; its slope is the Lyapunov exponent (see classifyMegno),
+            "departure_days": [float] first output time at which the object is beyond n_hill (task,
+                            default 3) Earth Hill radii, or None if it never is (or there is no Earth),
             "escaped":      [bool] whether the object left the simulation volume (series truncated),
         }
     """
@@ -2026,19 +2456,21 @@ def computeMegno(task, seed=1):
     # Stop following a particle that runs away, as in _integrateParticles
     sim.exit_max_distance = task.get("max_dist_au", 1000.0)
 
-    # Variational particle for the object only, with a random initial deviation in phase space. The
-    #   deviation is normalised because only its growth rate matters, not its size.
+    # Add a variational particle for the object only, with a random unit deviation in phase space
     var = sim.add_variation(order=1, testparticle=obj_i)
     rng = np.random.default_rng(seed)
     dev = rng.normal(size=6)
     vp = var.particles[0]
     vp.x, vp.y, vp.z, vp.vx, vp.vy, vp.vz = dev/np.linalg.norm(dev)
 
+    # Keep the logarithm of the rescaling factors, as the deviation is rescaled before it overflows
+    norm = {"offset": 0.0}
+
     def logDeviation():
         """ ln|delta| of the variational particle, over the full 6D phase space. """
 
         p = var.particles[0]
-        return 0.5*np.log(p.x**2 + p.y**2 + p.z**2 + p.vx**2 + p.vy**2 + p.vz**2)
+        return norm["offset"] + 0.5*np.log(p.x**2 + p.y**2 + p.z**2 + p.vx**2 + p.vy**2 + p.vz**2)
 
     # Running integrals: I = int s d(ln|delta|) and J = int Y ds
     acc = {"t": sim.t, "ln_d": logDeviation(), "I": 0.0, "J": 0.0, "Y": 0.0}
@@ -2064,8 +2496,14 @@ def computeMegno(task, seed=1):
     # Keep the returned reference alive until the integration ends (see _setHeartbeat)
     heartbeat_ref = _setHeartbeat(sim, heartbeat)  # noqa: F841
 
-    times_days, megno, a_au = [], [], []
+    times_days, megno, a_au, ln_delta = [], [], [], []
     escaped = False
+
+    # The departure from the Earth's neighbourhood, where the deviation grows by orders of magnitude
+    #   during the initial close passage, which is not the orbit's own chaos
+    earth_i = task["planet_names"].index("Earth") if "Earth" in task["planet_names"] else None
+    departure_radius = task.get("n_hill", 3.0)*HILL_RADII_AU["Earth"]
+    departure_days = None
 
     # Sample <Y> at the same output times as the main integration
     for t_out in task["times"]:
@@ -2085,11 +2523,25 @@ def computeMegno(task, seed=1):
 
         times_days.append(simTimeToDays(t_out))
         megno.append(acc["J"]/acc["t"])
+        ln_delta.append(logDeviation())
 
         # Heliocentric osculating semi-major axis, used to count the orbital periods covered
         a_au.append(sim.particles[obj_i].orbit(primary=sim.particles[0]).a)
 
-    return {"times_days": times_days, "megno": megno, "a_au": a_au, "escaped": escaped}
+        if (departure_days is None) and (earth_i is not None):
+            o, e = sim.particles[obj_i], sim.particles[earth_i]
+            if ((o.x - e.x)**2 + (o.y - e.y)**2 + (o.z - e.z)**2)**0.5 > departure_radius:
+                departure_days = times_days[-1]
+
+        # Rescale a large deviation to unit length (see norm)
+        p = var.particles[0]
+        size = (p.x**2 + p.y**2 + p.z**2 + p.vx**2 + p.vy**2 + p.vz**2)**0.5
+        if size > MEGNO_RESCALE_ABOVE:
+            p.x, p.y, p.z, p.vx, p.vy, p.vz = p.x/size, p.y/size, p.z/size, p.vx/size, p.vy/size, p.vz/size
+            norm["offset"] += np.log(size)
+
+    return {"times_days": times_days, "megno": megno, "a_au": a_au, "ln_delta": ln_delta, \
+            "departure_days": departure_days, "escaped": escaped}
 
 
 # MEGNO verdict thresholds. A regular orbit's <Y> settles within ~0.05 of 2 after tens of orbits
@@ -2105,7 +2557,133 @@ MEGNO_PERIODIC_MAX = 1.0
 MEGNO_MIN_ORBITS = 20
 
 
-def classifyMegno(times_days, megno, a_au):
+# Fewest orbital periods of exponential growth from which a Lyapunov time is given
+LYAPUNOV_MIN_ORBITS = 10
+
+# Largest change of the fitted Lyapunov time over the last half of the growth phase for it to be settled
+LYAPUNOV_SETTLED_TOL = 0.2
+
+
+def cumulativeSlopes(t, y):
+    """ The slope of the least-squares line through the first k points of (t, y), for every k at once
+    (NaN for k < 2), from running sums. Used for the Lyapunov fit from the onset of the growth to every
+    later time, which shows whether the fitted time has settled.
+
+    Arguments:
+        t: [ndarray] Times, increasing.
+        y: [ndarray] Values at those times.
+
+    Return:
+        [ndarray] The slope over points 0..k, for each k.
+    """
+
+    # Times from the first one, so the sums stay small
+    t = np.asarray(t, dtype=float) - t[0]
+    y = np.asarray(y, dtype=float)
+    n = np.arange(1, len(t) + 1, dtype=float)
+    st, sy, stt, sty = np.cumsum(t), np.cumsum(y), np.cumsum(t*t), np.cumsum(t*y)
+
+    with np.errstate(divide="ignore", invalid="ignore"):
+        slopes = (n*sty - st*sy)/(n*stt - st**2)
+    slopes[:2] = np.nan
+
+    return slopes
+
+
+
+def lyapunovFromDeviation(t_years, ln_delta, megno, period_years):
+    """ Lyapunov time of a chaotic orbit from the growth of ln|delta| (see computeMegno).
+
+    The fit starts when <Y> rises above MEGNO_CHAOTIC_MIN for the last time, i.e. when the
+    exponential growth sets in: before it, the deviation can stay flat or even shrink for centuries
+    (e.g. on an Earth-crossing orbit until its first deep encounter), and including that biases the
+    time high. ln|delta| is fitted directly, rather than <Y>, which is a double running average and
+    lags the growth. Chaos driven by close encounters grows in steps, so the growth phase is also
+    split into four consecutive windows of equal length (its quarters), each fitted on its own. The
+    spread of their times is returned as the range. A window in which ln|delta| does not grow (it can
+    shrink for a while between encounters) has no time and is left out of the range.
+
+    The 1 sigma of the time comes from the scatter of the windows' growth rates: their standard
+    deviation over the square root of their number is the standard error of the rate lambda, and
+    1/(lambda + sigma) to 1/(lambda - sigma) is the interval of the time, asymmetric since the time is
+    1/lambda (no upper limit when lambda - sigma <= 0). The fit from the onset to the end of each window
+    (cumulative) shows whether the time has settled.
+
+    No time is given from fewer than LYAPUNOV_MIN_ORBITS periods of growth. On an orbit with its aphelion
+    near Jupiter, 4 periods of growth gave 229 years, and 33 and 74 periods gave 54 and 66 years. The time
+    counts as settled when its cumulative fit changes by less than LYAPUNOV_SETTLED_TOL over the last half
+    of the growth phase. The last quarter alone misses a slow drift: over 4000 years, 21 of 21 Earth-crossing
+    orbits passed that test while the median of their times still rose by 21% from 2000 years.
+
+    Arguments:
+        t_years: [ndarray] Elapsed time of each output in years (positive).
+        ln_delta: [ndarray] ln|delta| at each output.
+        megno: [ndarray] <Y> at each output.
+        period_years: [float] Orbital period in years.
+
+    Return:
+        [dict] or None if there is no growth phase to fit (shorter than a tenth of the run or than
+        LYAPUNOV_MIN_ORBITS periods, or not growing): {
+            "lyapunov_time_years": 1/lambda over the growth phase,
+            "lyapunov_time_range_years": [min, max] over the windows that grow (None if none does,
+                or if there are too few points for windows),
+            "onset_years": start of the growth phase,
+            "windows": [list] one dict per window, {"start_years", "end_years",
+                "lyapunov_time_years" (None if ln|delta| does not grow in it)}, or None if there are
+                too few points (fewer than 40) for windows,
+            "lyapunov_time_1sigma_years": [low, high] 1 sigma interval of the time (high None when
+                unbounded), or None without windows,
+            "cumulative": [list] one dict per window, {"end_years", "lyapunov_time_years"} of the fit
+                from the onset to the end of that window, or None without windows,
+        }
+    """
+
+    below = np.where(megno <= MEGNO_CHAOTIC_MIN)[0]
+    k0 = (below[-1] + 1) if len(below) else 0
+
+    # At least a tenth of the run and LYAPUNOV_MIN_ORBITS periods, and enough points for a fit
+    if k0 >= len(t_years) - 10:
+        return None
+    span = t_years[-1] - t_years[k0]
+    if (span < 0.1*t_years[-1]) or (span < LYAPUNOV_MIN_ORBITS*period_years):
+        return None
+
+    t, l = t_years[k0:], ln_delta[k0:]
+    slope = np.polyfit(t, l, 1)[0]
+    if slope <= 0:
+        return None
+
+    # The outputs are evenly spaced, so equal numbers of points make windows of equal length
+    windows, rates, cumulative = [], [], []
+    if len(t) >= 40:
+        cum_slopes = cumulativeSlopes(t, l)
+        for w in np.array_split(np.arange(len(t)), 4):
+            s_w = np.polyfit(t[w], l[w], 1)[0]
+            rates.append(s_w)
+            windows.append({"start_years": float(t[w[0]]), "end_years": float(t[w[-1]]), \
+                            "lyapunov_time_years": float(1.0/s_w) if s_w > 0 else None})
+            s_c = cum_slopes[w[-1]]
+            cumulative.append({"end_years": float(t[w[-1]]), \
+                               "lyapunov_time_years": float(1.0/s_c) if s_c > 0 else None})
+
+    taus = [w["lyapunov_time_years"] for w in windows if w["lyapunov_time_years"] is not None]
+
+    # The standard error of the rate from the windows' scatter
+    sigma = None
+    if rates:
+        se = float(np.std(rates, ddof=1)/np.sqrt(len(rates)))
+        sigma = [float(1.0/(slope + se)), float(1.0/(slope - se)) if slope - se > 0 else None]
+
+    return {"lyapunov_time_years": float(1.0/slope), \
+            "lyapunov_time_range_years": [float(min(taus)), float(max(taus))] if taus else None, \
+            "onset_years": float(t[0]), \
+            "windows": windows if windows else None, \
+            "lyapunov_time_1sigma_years": sigma, \
+            "cumulative": cumulative if cumulative else None}
+
+
+
+def classifyMegno(times_days, megno, a_au, ln_delta=None):
     """ Decide whether a MEGNO series has converged to 2 (regular orbit), is growing (chaotic), or
     is not conclusive.
 
@@ -2121,6 +2699,11 @@ def classifyMegno(times_days, megno, a_au):
         megno: [list] <Y> at each output time.
         a_au: [list] Heliocentric semi-major axis at each output time.
 
+    Keyword arguments:
+        ln_delta: [list] ln|delta| at each output time (see computeMegno). If given, the Lyapunov
+            time of a chaotic orbit comes from its growth (lyapunovFromDeviation); otherwise from the
+            slope of <Y> over the second half of the run. Default None.
+
     Return:
         [dict] {
             "status":        "regular", "chaotic", "periodic", "not_converged", "too_short" or
@@ -2128,8 +2711,17 @@ def classifyMegno(times_days, megno, a_au):
             "final":         final <Y>,
             "last_quarter":  mean <Y> over the last quarter of the run,
             "n_orbits":      number of orbital periods spanned (median a), or None if unbound,
-            "lyapunov_time_years": for a chaotic orbit, 1/lambda from <Y> ~ (lambda/2) t fitted over
-                               the second half of the run; otherwise None,
+            "lyapunov_time_years": for a chaotic orbit, 1/lambda (see ln_delta); otherwise None,
+            "lyapunov_time_range_years": [min, max] of the time over windows of the growth phase,
+                               or None,
+            "lyapunov_windows": the windows of the growth phase and the time fitted in each (see
+                               lyapunovFromDeviation), or None,
+            "lyapunov_onset_years": start of the fitted growth phase, or None,
+            "lyapunov_time_1sigma_years": [low, high] 1 sigma interval of the time (high None when
+                               unbounded), or None,
+            "lyapunov_cumulative": the time fitted from the onset to the end of each window (see
+                               lyapunovFromDeviation), or None,
+            "lyapunov_method":  "ln_delta" or "megno_second_half", or None,
             "message":       one-line explanation,
         }
     """
@@ -2143,7 +2735,9 @@ def classifyMegno(times_days, megno, a_au):
     #   run: a series that is still drifting will disagree between the two
     result = {"status": None, "final": float(y[-1]) if len(y) else None,
               "last_quarter": float(np.mean(y[3*len(y)//4:])) if len(y) else None,
-              "n_orbits": None, "lyapunov_time_years": None}
+              "n_orbits": None, "lyapunov_time_years": None, "lyapunov_time_range_years": None, \
+              "lyapunov_windows": None, "lyapunov_onset_years": None, "lyapunov_method": None, \
+              "lyapunov_time_1sigma_years": None, "lyapunov_cumulative": None}
 
     # Not enough points for the last quarter to mean anything (or no points at all)
     if len(y) < 8:
@@ -2167,7 +2761,7 @@ def classifyMegno(times_days, megno, a_au):
 
     # <Y> needs many orbits to settle, so a short run gets no verdict at all rather than a wrong one
     if n_orbits < MEGNO_MIN_ORBITS:
-        result.update(status="too_short", message="The run covers only {:.1f} orbital periods; MEGNO "
+        result.update(status="too_short", message="The run covers only {:.3g} orbital periods; MEGNO " \
                       "needs at least {:d} to settle. Integrate for at least {:.0f} years.".format(
                           n_orbits, MEGNO_MIN_ORBITS, MEGNO_MIN_ORBITS*a_med**1.5))
         return result
@@ -2181,12 +2775,28 @@ def classifyMegno(times_days, megno, a_au):
     #   Lyapunov exponent from the slope. Only the second half is fitted, since the early part
     #   still carries the transient from the object's departure from the Earth.
     elif (final > MEGNO_CHAOTIC_MIN) and (last_quarter > MEGNO_CHAOTIC_MIN):
-        half = len(y)//2
-        slope = np.polyfit(t_years[half:], y[half:], 1)[0]
 
-        # A negative slope would give a meaningless negative time, so it is left unreported
-        if slope > 0:
-            result["lyapunov_time_years"] = float(1.0/(2*slope))
+        # Fit the growth of ln|delta| when it is available, and give no time from <Y> if it is too short
+        if (ln_delta is not None) and (len(ln_delta) == len(y)):
+            fit = lyapunovFromDeviation(t_years, np.array(ln_delta, dtype=float), y, a_med**1.5)
+            result["lyapunov_method"] = "ln_delta"
+            if fit is not None:
+                result.update(lyapunov_time_years=fit["lyapunov_time_years"], \
+                              lyapunov_time_range_years=fit["lyapunov_time_range_years"], \
+                              lyapunov_windows=fit["windows"], \
+                              lyapunov_time_1sigma_years=fit["lyapunov_time_1sigma_years"], \
+                              lyapunov_cumulative=fit["cumulative"], \
+                              lyapunov_onset_years=fit["onset_years"])
+
+        # Otherwise from <Y> ~ (lambda/2) t over the second half
+        else:
+            half = len(y)//2
+            slope = np.polyfit(t_years[half:], y[half:], 1)[0]
+
+            # A negative slope would give a meaningless negative time, so it is left unreported
+            if slope > 0:
+                result.update(lyapunov_time_years=float(1.0/(2*slope)), \
+                              lyapunov_method="megno_second_half")
 
         result.update(status="chaotic", message="<Y> does not converge to 2 and keeps growing: the "
                       "orbit is chaotic.")
@@ -2194,8 +2804,10 @@ def classifyMegno(times_days, megno, a_au):
     # Tending to 0 instead of 2: the deviation stays bounded, which is regular motion too
     elif (final < MEGNO_PERIODIC_MAX) and (last_quarter < MEGNO_PERIODIC_MAX):
         result.update(status="periodic", message="<Y> tends to 0 rather than 2: the deviation from "
-                      "the orbit stays bounded, the signature of a stable periodic orbit (e.g. "
-                      "libration in a mean-motion resonance). Regular, not chaotic.")
+                      "the orbit stayed bounded over this span, as around a stable periodic orbit (e.g. " \
+                      "libration in a mean-motion resonance). An Earth-crossing orbit can also do this " \
+                      "for a while before its first deep encounter: this is about the nominal orbit " \
+                      "over this span, not the clones (see their Lyapunov time).")
 
     # Between the thresholds, or the two statistics disagree: the run is simply too short to tell
     else:
@@ -2203,6 +2815,255 @@ def classifyMegno(times_days, megno, a_au):
                       "growing either; integrate for longer to decide.")
 
     return result
+
+
+# Clones whose MEGNO is also computed by reboundSimulate(compute_megno=True), when the run has clones
+MEGNO_CLONES = 32
+
+# Largest change of the clones' median Lyapunov time from the first half of the run to all of it for it to
+#   be settled
+LYAPUNOV_CLONES_SETTLED_TOL = 0.1
+
+
+def _cloneLyapunov(task):
+    """ Verdict and Lyapunov time of one clone, over the whole run and over its first half. It is a
+    function of the module so that a worker process can run it.
+
+    Arguments:
+        task: [dict] An _integrateParticles task with the clone as its only particle.
+
+    Return:
+        [dict] {"status": the verdict of classifyMegno, "lyapunov_time_years": the time or None,
+        "half_run_lyapunov_time_years": the time from the first half of the outputs or None}. <Y> and
+        ln|delta| at a time do not depend on what follows, so the first half is what a run of half the
+        span would give.
+    """
+
+    megno = computeMegno(task)
+    times, y, a, ln_delta = megno["times_days"], megno["megno"], megno["a_au"], megno["ln_delta"]
+    verdict = classifyMegno(times, y, a, ln_delta=ln_delta)
+
+    half = len(times)//2
+    verdict_half = classifyMegno(times[:half], y[:half], a[:half], ln_delta=ln_delta[:half])
+
+    return {"status": verdict["status"], "lyapunov_time_years": verdict["lyapunov_time_years"], \
+            "half_run_lyapunov_time_years": verdict_half["lyapunov_time_years"]}
+
+
+
+def summariseCloneLyapunov(results):
+    """ The Lyapunov time over a set of clones.
+
+    Arguments:
+        results: [list] One dict per clone, as _cloneLyapunov returns them.
+
+    Return:
+        [dict] {
+            "n_clones": [int] how many clones,
+            "status_counts": [dict] how many clones got each verdict,
+            "lyapunov_times_years": [list] the times of the clones that have one, sorted,
+            "lyapunov_time_median_years": [float] their median, or None if none has a time,
+            "lyapunov_time_p16_years", "lyapunov_time_p84_years": [float] their percentiles, or None,
+            "half_run_median_years": [float] the same median over the first half of the run, or None if
+                fewer than half of the clones have a time there,
+            "change_on_doubling": [float] how much the median changes from the first half of the run to
+                all of it, as a fraction of the latter, or None,
+        }
+
+    The median counts as settled when change_on_doubling is below LYAPUNOV_CLONES_SETTLED_TOL. It is tighter
+    than LYAPUNOV_SETTLED_TOL because a median over many clones is far less noisy than one orbit: the change
+    has a scatter of 4-9% with 32 clones, measured by bootstrap over 21 orbits.
+    """
+
+    counts = {}
+    for r in results:
+        counts[r["status"]] = counts.get(r["status"], 0) + 1
+
+    taus = sorted(float(r["lyapunov_time_years"]) for r in results if r["lyapunov_time_years"] is not None)
+    halves = [float(r["half_run_lyapunov_time_years"]) for r in results \
+              if r["half_run_lyapunov_time_years"] is not None]
+
+    summary = {"n_clones": len(results), "status_counts": counts, "lyapunov_times_years": taus, \
+               "lyapunov_time_median_years": None, "lyapunov_time_p16_years": None, \
+               "lyapunov_time_p84_years": None, "half_run_median_years": None, "change_on_doubling": None}
+
+    if taus:
+        median = float(np.median(taus))
+        summary.update(lyapunov_time_median_years=median, \
+                       lyapunov_time_p16_years=float(np.percentile(taus, 16)), \
+                       lyapunov_time_p84_years=float(np.percentile(taus, 84)))
+
+        if 2*len(halves) >= len(results):
+            half_median = float(np.median(halves))
+            summary.update(half_run_median_years=half_median, \
+                           change_on_doubling=abs(median - half_median)/median)
+
+    return summary
+
+
+
+def lyapunovOverClones(tasks, n_cpu=1):
+    """ The Lyapunov time over a set of clones, each integrated as computeMegno does.
+
+    One orbit's Lyapunov time is one draw. Measured on Winchcombe over 1000 years, the nominal orbit's 69
+    years was at the 86th percentile of its clones, whose median was 42 years. Past ~36 Lyapunov times
+    (ln 1e16), round-off alone gives another orbit too. With MEGNO_CLONES = 32 clones the median is good to
+    9% (18% with 8, 12% with 16). The clones are integrated with Newtonian gravity only, so they cost less
+    than as many clones of the main integration.
+
+    Arguments:
+        tasks: [list] One _integrateParticles task per clone.
+
+    Keyword arguments:
+        n_cpu: [int] Worker processes to share them among. Default 1.
+
+    Return:
+        [dict] See summariseCloneLyapunov. A clone that fails is left out, with a warning.
+    """
+
+    n_cpu = max(1, min(n_cpu, len(tasks)))
+
+    if n_cpu == 1:
+        return summariseCloneLyapunov([_cloneLyapunov(t) for t in tasks])
+
+    results = []
+    with concurrent.futures.ProcessPoolExecutor(max_workers=n_cpu) as executor:
+        for future in concurrent.futures.as_completed([executor.submit(_cloneLyapunov, t) for t in tasks]):
+            try:
+                results.append(future.result())
+            except Exception as e:
+                print("\nWarning: the MEGNO of a clone failed and was skipped: {:s}".format(str(e)))
+
+    return summariseCloneLyapunov(results)
+
+
+
+def _spanText(days):
+    """ A time span in days as text, in years from a year up, e.g. "45 years" or "60 days". """
+
+    days = abs(days)
+    if days >= 365.25:
+        return "{:.0f} years".format(days/365.25)
+
+    return "{:.0f} days".format(days)
+
+
+
+def plotMegno(megno, file_path=None):
+    """ Figure of the MEGNO of the nominal orbit (see computeMegno and classifyMegno): <Y> against time
+    and, when the series has ln|delta|, the deviation itself with the fit of the Lyapunov time over its
+    growth phase (see lyapunovFromDeviation).
+
+    Arguments:
+        megno: [dict] MEGNO result with its verdict, as reboundSimulate stores it.
+
+    Keyword arguments:
+        file_path: [str] Where to save the figure, or None not to save it.
+
+    Return:
+        (fig, axes): the figure and its axes, one or two.
+    """
+
+    v = megno["verdict"]
+
+    # MEGNO only gets a verdict after tens of orbital periods, so the time is in years
+    t = np.array(megno["times_days"], dtype=float)/365.25
+    sign = -1.0 if (len(t) and t[-1] < 0) else 1.0
+
+    ln_delta = megno.get("ln_delta")
+    with_deviation = (ln_delta is not None) and (len(ln_delta) == len(t))
+    onset = v.get("lyapunov_onset_years") if with_deviation else None
+
+    if with_deviation:
+        fig, axes = plt.subplots(2, 1, figsize=(8, 7), sharex=True)
+    else:
+        fig, ax = plt.subplots(figsize=(8, 4.5))
+        axes = [ax]
+
+    ax = axes[0]
+    ax.plot(t, megno["megno"], lw=1.2, label="<Y> (MEGNO)")
+    ax.axhline(2.0, color="k", ls="--", lw=1, label="2 (regular)")
+    ax.axhline(MEGNO_CHAOTIC_MIN, color="C1", ls=":", lw=1.2, \
+               label="{:g} (chaotic above)".format(MEGNO_CHAOTIC_MIN))
+    ax.set_ylabel("<Y>")
+    ax.set_title("{:s} of the nominal orbit (Newtonian gravity): {:s}".format( \
+        "MEGNO and Lyapunov time" if with_deviation else "MEGNO", v["status"].replace("_", " ")))
+
+    if with_deviation:
+        ax = axes[1]
+        l = np.array(ln_delta, dtype=float)
+        ax.plot(t, l, color="k", lw=1.0, label="$\\ln|\\delta|$")
+
+        # The straight fit of ln|delta| over the growth phase, whose slope is 1/tau
+        if onset is not None:
+            elapsed = np.abs(t)
+            growth = (elapsed >= onset - 1e-9) & np.isfinite(l)
+            if growth.sum() >= 2:
+                coef = np.polyfit(elapsed[growth], l[growth], 1)
+                sigma_text = lyapunovSigmaText(v["lyapunov_time_years"], v.get("lyapunov_time_1sigma_years"))
+                sigma_text = sigma_text.replace("1 sigma", "1$\\sigma$")
+                ax.plot(t[growth], np.polyval(coef, elapsed[growth]), color="C1", lw=1.6, \
+                    label="Lyapunov time {:.0f} years{:s}".format(v["lyapunov_time_years"], sigma_text))
+
+        ax.set_ylabel("$\\ln|\\delta|$")
+
+    # The start of the fit, where <Y> last crossed MEGNO_CHAOTIC_MIN, in both panels
+    if onset is not None:
+        for k, ax in enumerate(axes):
+            ax.axvline(sign*onset, color="C1", ls="-.", lw=1.0, label="start of the fit" if k == 0 else None)
+
+    for ax in axes:
+        ax.legend(fontsize=8)
+
+    axes[-1].set_xlabel("Time [years]")
+    fig.tight_layout()
+
+    if file_path is not None:
+        fig.savefig(file_path)
+
+    return fig, axes
+
+
+
+def lyapunovSigmaText(tau, sigma):
+    """ The 1 sigma of a Lyapunov time as text, e.g. " (+59/-14, 1 sigma)": asymmetric, since the time is
+    1/lambda and the sigma is that of lambda (see lyapunovFromDeviation). Empty without a sigma. """
+
+    if sigma is None:
+        return ""
+    if sigma[1] is None:
+        return " (-{:.0f}/+inf, 1 sigma: the rate is within 1 sigma of 0)".format(tau - sigma[0])
+
+    return " (+{:.0f}/-{:.0f}, 1 sigma)".format(sigma[1] - tau, tau - sigma[0])
+
+
+
+def _cloneLyapunovReportLines(clones):
+    """ Human-readable lines describing a lyapunovOverClones result. """
+
+    lines = ["  The same over {:d} clones of the run:".format(clones["n_clones"])]
+    verdicts = ["{:d} {:s}".format(n, status.replace("_", " ")) \
+        for status, n in sorted(clones["status_counts"].items())]
+    lines.append("    Verdicts: {:s}.".format(", ".join(verdicts)))
+
+    median = clones["lyapunov_time_median_years"]
+    if median is None:
+        return lines
+
+    lines.append("    Lyapunov time: median {:.0f} years (16-84% of the clones: {:.0f}-{:.0f}), from the " \
+        "{:d} with a time.".format(median, clones["lyapunov_time_p16_years"], \
+        clones["lyapunov_time_p84_years"], len(clones["lyapunov_times_years"])))
+    lines.append("    The nominal orbit is one draw among them, so this is the value to quote.")
+
+    # Say whether the median has settled when the span doubles
+    change = clones["change_on_doubling"]
+    if change is not None:
+        lines.append("    From the first half of the run the median is {:.0f} years: it changes by {:.0f}% " \
+            "when the span doubles,".format(clones["half_run_median_years"], 100*change))
+        lines.append("    so {:s}".format("this is a value for this span, not yet a limit." \
+            if change > LYAPUNOV_CLONES_SETTLED_TOL else "it has settled."))
+
+    return lines
 
 
 def _megnoReportLines(megno):
@@ -2221,7 +3082,7 @@ def _megnoReportLines(megno):
 
     # Not available for an unbound orbit, where there is no orbital period to count
     if v["n_orbits"] is not None:
-        lines.append("  span: {:.1f} orbital periods".format(v["n_orbits"]))
+        lines.append("  span: {:.3g} orbital periods".format(v["n_orbits"]))
 
     # The statuses with no entry here ("too_short" and "unbound") are the ones with no verdict
     converges = {"regular": "YES", "chaotic": "NO", "periodic": "NO (tends to 0)",
@@ -2231,10 +3092,69 @@ def _megnoReportLines(megno):
     else:
         lines.append("  No verdict: {:s}".format(v["message"]))
 
+    # A chaotic orbit whose exponential growth is still too short to time
+    if (v["status"] == "chaotic") and (v["lyapunov_time_years"] is None) \
+            and (v.get("lyapunov_method") == "ln_delta"):
+        lines.append("  Lyapunov time not determined: the exponential growth of ln|delta| covers fewer " \
+            "than {:d}".format(LYAPUNOV_MIN_ORBITS))
+        lines.append("  orbital periods (or a tenth of the run). Integrate for longer to time it.")
+
     # Only set for a chaotic orbit with a positive fitted slope
     if v["lyapunov_time_years"] is not None:
-        lines.append("  Lyapunov time ~ {:.0f} years (from <Y> ~ (lambda/2) t over the second "
-                     "half).".format(v["lyapunov_time_years"]))
+        if v.get("lyapunov_method") == "ln_delta":
+
+            # Times are counted from the start of the run, back from it in a backward run
+            when = "back" if megno["times_days"][-1] < 0 else "after the start"
+
+            # It describes the nominal orbit alone, in the re-integration above, and not the clones
+            sigma_text = lyapunovSigmaText(v["lyapunov_time_years"], v.get("lyapunov_time_1sigma_years"))
+            lines.append("  Lyapunov time ~ {:.0f} years{:s}, of the nominal orbit alone (for the clones, " \
+                "see".format(v["lyapunov_time_years"], sigma_text))
+            lines.append("  below). Fitted to the growth of ln|delta| from {:.0f} to {:.0f} years " \
+                "{:s},".format(v["lyapunov_onset_years"], abs(megno["times_days"][-1])/365.25, when))
+            lines.append("  i.e. since <Y> last exceeded {:.1f}.".format(MEGNO_CHAOTIC_MIN))
+
+            # Each window of the growth phase with its own time, so that the range can be traced back
+            windows = v.get("lyapunov_windows")
+            if windows:
+                lines.append("  Encounter-driven chaos grows in steps, so the same fit in each quarter of " \
+                             "that span gives:")
+                spans = ["{:.0f}-{:.0f} years {:s}".format(w["start_years"], w["end_years"], when) \
+                         for w in windows]
+                width = max(len(s) for s in spans)
+                for s, w in zip(spans, windows):
+                    lines.append("    {:>{:d}s}: {:s}".format(s, width, \
+                                 "no growth" if w["lyapunov_time_years"] is None \
+                                 else "{:.0f} years".format(w["lyapunov_time_years"])))
+                lines.append("  The 1 sigma is the scatter of the quarters' growth rates over the square " \
+                    "root of their number.")
+
+                # The fit from the onset to the end of each quarter, and whether it has settled
+                cumulative = v.get("lyapunov_cumulative")
+                if cumulative:
+                    taus = [c["lyapunov_time_years"] for c in cumulative]
+                    tau_text = ", ".join("no growth" if x is None else "{:.0f}".format(x) for x in taus)
+                    lines.append("  Fitted from the onset to the end of each quarter: {:s} years.".format( \
+                        tau_text))
+                    if None in taus[-3:]:
+                        lines.append("  It has not settled: integrate for longer to time it.")
+                    else:
+                        change = max(abs(taus[-1] - x) for x in taus[-3:-1])/taus[-1]
+                        if change > LYAPUNOV_SETTLED_TOL:
+                            lines.append("  It still changes by {:.0f}% over the last half of the growth " \
+                                "phase, so it has not settled: integrate for longer.".format(100*change))
+                        else:
+                            lines.append("  It changes by {:.0f}% over the last half of the growth phase: " \
+                                "settled.".format(100*change))
+            else:
+                lines.append("  Too few outputs in the growth phase to also fit it by quarters, so no " \
+                    "range is given.")
+        else:
+            lines.append("  Lyapunov time ~ {:.0f} years (from <Y> ~ (lambda/2) t over the second " \
+                         "half).".format(v["lyapunov_time_years"]))
+
+    if megno.get("clones"):
+        lines.extend(_cloneLyapunovReportLines(megno["clones"]))
 
     if megno.get("escaped"):
         lines.append("  The object left the simulation volume, so the MEGNO series is truncated.")
@@ -2275,6 +3195,422 @@ def integrationEpochs(jd_ref_utc, elapsed_days):
         "final_utc": final.iso,
     }
 
+# With more clones than this, the figure shows their percentile bands instead of every clone
+PLOT_BANDS_MIN_CLONES = 20
+
+# Clones drawn individually on top of the bands, to show how single trajectories behave
+PLOT_SAMPLE_CLONES = 10
+
+# Percentiles of the clones' bands, 2 and 1 standard deviations either side of the mean of a normal
+#   distribution and the median
+PLOT_SIGMA_PERCENTILES = (2.275, 15.866, 50.0, 84.134, 97.725)
+
+# The Lyapunov time in dark red on every panel of the orbit figure
+PLOT_LYAPUNOV_COLOR = "darkred"
+
+# The representative clone (see representativeOrbit) in fuchsia with a white edge, which keeps it visible
+#   on the blue bands with protanopia and deuteranopia
+PLOT_REPRESENTATIVE_COLOR = "#cf027e"
+PLOT_REPRESENTATIVE_EDGE = [patheffects.Stroke(linewidth=2.5, foreground="white"), patheffects.Normal()]
+
+
+def _unwrapDegrees(values):
+    """ An angle series in degrees made continuous in time, so that it can run past 0 or 360 deg. NaN
+    values are kept, and the series is continuous across them. """
+
+    y = np.array(values, dtype=float)
+    ok = np.isfinite(y)
+    y[ok] = np.degrees(np.unwrap(np.radians(y[ok])))
+
+    return y
+
+
+
+def _turnOffset(values, reference):
+    """ The whole turns (in degrees) to add to a continuous angle series so that its first value
+    shared with the reference series lies within 180 deg of it, or 0 if they share none. """
+
+    both = np.isfinite(values) & np.isfinite(reference)
+    if not both.any():
+        return 0.0
+    k = np.argmax(both)
+
+    return 360.0*np.round((reference[k] - values[k])/360.0)
+
+
+
+def _circularPercentiles(stack, percentiles):
+    """ Percentiles of angles at each time, taken about their circular mean: the angles are measured
+    from the mean in -180 to 180 deg, so the cut falls opposite the cloud, where the fewest clones are.
+    Taken directly in 0-360 deg, or about one clone (e.g. the nominal), a cloud across 0/360 deg or
+    off that clone would be cut through and its percentiles would jump.
+
+    Arguments:
+        stack: [ndarray] Angles in degrees, one row per clone and one column per time (NaN where a
+            clone has no value).
+        percentiles: [list] Percentiles to return.
+
+    Return:
+        [ndarray] One row per percentile, continuous in time (not reduced to 0-360 deg).
+    """
+
+    rad = np.radians(stack)
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", RuntimeWarning)
+        centre = np.degrees(np.arctan2(np.nanmean(np.sin(rad), axis=0), np.nanmean(np.cos(rad), axis=0)))
+        centre = _unwrapDegrees(centre)
+        offsets = (stack - centre + 180.0) % 360.0 - 180.0
+
+        return centre + np.nanpercentile(offsets, percentiles, axis=0)
+
+
+
+def _turnShifts(series, lo, hi):
+    """ Whole turns (in degrees) to subtract from angle series so that each copy overlaps [lo, hi]:
+    drawn at all of them, the series show modulo 360 deg without a jump at 0/360 deg. """
+
+    v = np.concatenate([np.asarray(s, dtype=float).ravel() for s in series])
+    v = v[np.isfinite(v)]
+    if not len(v):
+        return [0.0]
+
+    k_min = int(np.ceil((v.min() - hi)/360.0))
+    k_max = int(np.floor((v.max() - lo)/360.0))
+
+    return [360.0*k for k in range(k_min, k_max + 1)]
+
+
+
+def _circularInterval(angles, low=2.5, high=97.5):
+    """ The low-high percentile interval of angles in radians, taken about their circular mean (see
+    _circularPercentiles), as (low, high) within 0-2 pi: low > high when the interval runs through 0. Taken
+    in 0-2 pi directly, a cloud across 0 would give an interval running round almost the whole circle. """
+
+    p = _circularPercentiles(np.degrees(np.asarray(angles, dtype=float))[:, None], [low, high])[:, 0]
+
+    return tuple(float(x) for x in np.radians(p % 360.0))
+
+
+
+def plotReboundOrbits(sim_outputs, sim_outputs_mc, encounters, file_path=None, dist_unit_multiplier=1.0, \
+                      length_units="AU", representative=None, lyapunov_years=None, lyapunov_text=None, \
+                      n_hill=3.0, clone_encounters=None, closest_au=None, closest_time_days=None):
+    """ Figure of the evolution of the orbit: the nominal solution and the Monte Carlo clones.
+
+    Panels: a, e, q; i, node, argument of perihelion; longitude of perihelion, aphelion distance Q, and the
+    close approaches to every body in units of its Hill radius.
+
+    The approaches panel shows the nominal's encounters as stars in the colour of their body, the
+    clones' encounters as faint dots, and, for a body with neither, its closest approach as a ring if
+    within APPROACH_MAX_HILL (further out the body never mattered; the Sun gets no ring, as its closest
+    approach is the perihelion, which the q panel shows). The Sun has no Hill sphere: its
+    distance is scaled so that its SUN_ENCOUNTER_AU gate falls on the n_hill line of the others. The
+    distance to the Earth at the outputs is drawn too in runs shorter than two years, where it shows
+    the departure; in longer runs the output sampling misses the approaches.
+
+    With PLOT_BANDS_MIN_CLONES clones or more, the clones are shown as their 2 and 1 sigma bands (the
+    percentiles of PLOT_SIGMA_PERCENTILES) and the median at each time, with PLOT_SAMPLE_CLONES of them
+    drawn individually; with fewer, every clone is drawn. The angles are labelled within 0-360 deg but
+    drawn continuous, so that crossing 0/360 deg draws no vertical line: each series is followed in
+    time, the axis covers either the data alone (its labels then run on past 360 as 0, 10, ...) or one
+    full turn, and the series are drawn at every whole turn that falls on it. Their bands are taken
+    about the clones' circular mean (see _circularPercentiles). The vertical axes cover the run from
+    the departure from the Earth, before which the osculating heliocentric elements carry the Earth's
+    pull. The time is in years for spans of two years or more.
+
+    The path of the representative clone (see representativeOrbit), chosen at the end of the run, is drawn
+    in PLOT_REPRESENTATIVE_COLOR, with a white edge, over the element panels. The Lyapunov time (see
+    lyapunovTimeToQuote) is marked on every panel if the run is longer.
+
+    Arguments:
+        sim_outputs: [list] Outputs of the nominal solution (see reboundSimulate).
+        sim_outputs_mc: [dict] {name: outputs} of the clones, possibly empty.
+        encounters: [list] Close encounters of the nominal solution (see encountersFromMinDistances).
+
+    Keyword arguments:
+        file_path: [str] Where to save the figure, or None not to save it.
+        dist_unit_multiplier: [float] Factor from AU to the length unit of a and q. Default 1.
+        length_units: [str] Name of that unit. Default "AU".
+        representative: [dict] Return of representativeOrbit, whose clone is drawn, or None.
+        lyapunov_years: [float] Lyapunov time to mark (years), or None.
+        lyapunov_text: [str] Where that time comes from, for the legend, e.g. "median of the clones".
+        n_hill: [float] Earth Hill radii of the departure and of the encounter threshold. Default 3.
+        clone_encounters: [dict] {clone name: encounters of that clone}, or None.
+        closest_au: [dict] {body: closest approach of the nominal solution in AU}, or None.
+        closest_time_days: [dict] {body: time of that closest approach in days}, or None.
+
+    Return:
+        (fig, axes): the figure and a dict of its axes by panel name.
+    """
+
+    t_days = np.array([simTimeToDays(row[0]) for row in sim_outputs])
+    in_years = abs(t_days[-1] - t_days[0]) >= 2*365.25
+    t_scale = 365.25 if in_years else 1.0
+    t = t_days/t_scale
+    t_label = "Time [years]" if in_years else "Time [days]"
+    n = len(t)
+
+    k_dep = findEarthDepartureIndex(sim_outputs, n_hill=n_hill)
+    k_dep = 0 if k_dep is None else k_dep
+
+    def series(rows):
+        """ The plotted quantities of one run, padded with NaN to the nominal length. """
+
+        out = {key: np.full(n, np.nan) for key in ("a", "e", "q", "Q", "i", "node", "peri", "varpi", "earth")}
+        for k, row in enumerate(rows[:n]):
+            orb = row[2]
+            out["a"][k] = orb.a*dist_unit_multiplier
+            out["e"][k] = orb.e
+            out["q"][k] = orb.a*(1 - orb.e)*dist_unit_multiplier
+            out["Q"][k] = orb.a*(1 + orb.e)*dist_unit_multiplier if orb.e < 1 else np.nan
+            out["i"][k] = np.degrees(orb.inc)
+            out["node"][k] = np.degrees(orb.Omega)
+            out["peri"][k] = np.degrees(orb.omega)
+            out["varpi"][k] = np.degrees(orb.Omega + orb.omega) % 360.0
+            out["earth"][k] = row[3].get("Earth", np.nan)
+        return out
+
+    nominal = series(sim_outputs)
+    clones = [series(rows) for rows in sim_outputs_mc.values()]
+
+    # Leave out the elements before the departure, which carry the Earth's pull and would draw a jump
+    element_keys = ("a", "e", "q", "Q", "i", "node", "peri", "varpi")
+    for run in [nominal] + clones:
+        for key in element_keys:
+            run[key][:k_dep] = np.nan
+
+    # Make each angle continuous in time, with the clones on the nominal's turn
+    angles = ("node", "peri", "varpi")
+    raw_angles = {key: np.array([c[key] for c in clones]) for key in angles}
+    for key in angles:
+        nominal[key] = _unwrapDegrees(nominal[key])
+        for c in clones:
+            c[key] = _unwrapDegrees(c[key])
+            c[key] += _turnOffset(c[key], nominal[key])
+
+    # The path of the clone that represents the clones at the end
+    rep_name = None if representative is None else representative.get("clone")
+    representative = None
+    if rep_name in sim_outputs_mc:
+        representative = series(sim_outputs_mc[rep_name])
+        for key in element_keys:
+            representative[key][:k_dep] = np.nan
+        for key in angles:
+            representative[key] = _unwrapDegrees(representative[key])
+            representative[key] += _turnOffset(representative[key], nominal[key])
+
+    fig, axs = plt.subplots(3, 3, figsize=(15, 11), sharex=True)
+    names = [["a", "e", "q"], ["i", "node", "peri"], ["varpi", "Q", "encounters"]]
+    axes = {name: axs[r, c] for r, row in enumerate(names) for c, name in enumerate(row)}
+    # Each element by its name and its symbol
+    labels = {"a": "semi-major axis $a$ [{:s}]".format(length_units), "e": "eccentricity $e$", \
+              "q": "perihelion distance $q$ [{:s}]".format(length_units), "i": "inclination $i$ [deg]", \
+              "node": r"longitude of the node $\Omega$ [deg]", \
+              "peri": r"argument of perihelion $\omega$ [deg]", \
+              "varpi": r"longitude of perihelion $\varpi$ [deg]", \
+              "Q": "aphelion distance $Q$ [{:s}]".format(length_units)}
+
+    use_bands = len(clones) >= PLOT_BANDS_MIN_CLONES
+    if use_bands:
+        sample = clones[::max(1, len(clones)//PLOT_SAMPLE_CLONES)][:PLOT_SAMPLE_CLONES]
+    else:
+        sample = clones
+
+    for key, label in labels.items():
+
+        ax = axes[key]
+        limits = [nominal[key][k_dep:]]
+
+        p = None
+        if use_bands:
+            if key in angles:
+                p = _circularPercentiles(raw_angles[key], PLOT_SIGMA_PERCENTILES)
+                p += _turnOffset(p[2], nominal[key])
+            else:
+                stack = np.array([c[key] for c in clones])
+                with warnings.catch_warnings():
+                    warnings.simplefilter("ignore", RuntimeWarning)
+                    p = np.nanpercentile(stack, PLOT_SIGMA_PERCENTILES, axis=0)
+            limits += [p[0][k_dep:], p[4][k_dep:]]
+        else:
+            limits += [c[key][k_dep:] for c in sample]
+
+        # Scale to the run from the departure, not to the osculating elements still inside the
+        #   Earth's neighbourhood
+        values = np.concatenate([v[np.isfinite(v)] for v in limits]) if limits else np.array([])
+        lo, hi = (values.min(), values.max()) if len(values) else (0.0, 1.0)
+        pad = 0.05*(hi - lo) if hi > lo else max(abs(hi)*1e-6, 1e-12)
+        lo, hi = lo - pad, hi + pad
+
+        # An angle covers either its data, labelled modulo 360 deg, or one full turn
+        if key in angles:
+            if hi - lo < 360.0:
+                base = 360.0*np.floor(0.5*(lo + hi)/360.0)
+                lo, hi = lo - base, hi - base
+                ax.yaxis.set_major_locator(MaxNLocator(nbins=6, steps=[1, 2, 3, 6, 9, 10]))
+                ax.yaxis.set_major_formatter(FuncFormatter( \
+                    lambda y, pos: "{:g}".format(float(np.round(y % 360.0, 6)) % 360.0)))
+            else:
+                lo, hi = 0.0, 360.0
+                ax.yaxis.set_major_locator(MultipleLocator(90))
+
+        def shifts(*series):
+            return _turnShifts(series, lo, hi) if key in angles else [0.0]
+
+        if p is not None:
+            for j, s in enumerate(shifts(p[0], p[4])):
+                first = (key == "a") and (j == 0)
+                ax.fill_between(t, p[0] - s, p[4] - s, color="C0", alpha=0.18, lw=0, \
+                                label="clones 2$\\sigma$" if first else None)
+                ax.fill_between(t, p[1] - s, p[3] - s, color="C0", alpha=0.35, lw=0, \
+                                label="clones 1$\\sigma$" if first else None)
+                ax.plot(t, p[2] - s, color="C0", lw=1.0, ls="--", label="clones median" if first else None)
+
+        for j, c in enumerate(sample):
+            for m, s in enumerate(shifts(c[key])):
+                ax.plot(t, c[key] - s, color="0.35", lw=0.4, alpha=0.6, \
+                        label=("{:d} sample clones".format(len(sample)) if use_bands else "clones") \
+                        if (key == "a" and j == 0 and m == 0) else None)
+
+        if representative is not None:
+            for m, s in enumerate(shifts(representative[key])):
+                ax.plot(t, representative[key] - s, color=PLOT_REPRESENTATIVE_COLOR, lw=1.2, \
+                        path_effects=PLOT_REPRESENTATIVE_EDGE, \
+                        label="representative clone" if (key == "a" and m == 0) else None)
+
+        for m, s in enumerate(shifts(nominal[key])):
+            ax.plot(t, nominal[key] - s, color="k", lw=1.4, \
+                label="nominal" if (key == "a" and m == 0) else None)
+        ax.set_ylabel(label)
+        ax.set_ylim(lo, hi)
+
+    # Close approaches to every body in units of its Hill radius, so that one line is the encounter
+    #   threshold for all of them, on a log scale
+    ax = axes["encounters"]
+
+    def hillUnits(body, dist_au):
+        """ Distance in Hill radii of the body; for the Sun, scaled so its gate is at n_hill. """
+        if body == "Sun":
+            return n_hill*dist_au/SUN_ENCOUNTER_AU
+        return dist_au/HILL_RADII_AU[body]
+
+    def plotted(body):
+        return (body == "Sun") or (body in HILL_RADII_AU)
+
+    # One colour per body
+    body_colors = {"Sun": "gold", "Mercury": "teal", "Venus": "orange", "Earth": "red", "Luna": "magenta", \
+                   "Mars": "saddlebrown", "Jupiter": "purple", "Saturn": "olive", "Uranus": "c", \
+                   "Neptune": "navy"}
+
+    def planetColor(body):
+        return body_colors.get(body, "0.3")
+
+    drawn = set()
+
+    # Draw the distance to the Earth at the outputs in a short run, where it shows the departure
+    if not in_years:
+        earth = nominal["earth"]
+        ax.plot(t, np.where(earth > 0, earth, np.nan)/HILL_RADII_AU["Earth"], color="0.55", lw=0.6, \
+                zorder=1)
+
+    ax.axhline(n_hill, color="0.3", ls=":", lw=1, zorder=1)
+
+    # Encounters of the clones, faint, below everything else
+    clone_points = {}
+    for encs in (clone_encounters or {}).values():
+        for enc in encs:
+            if plotted(enc["body"]):
+                clone_points.setdefault(enc["body"], []).append( \
+                    (enc["time_days"]/t_scale, hillUnits(enc["body"], enc["min_dist_au"])))
+    for body, pts in clone_points.items():
+        pts = np.array(pts)
+        ax.plot(pts[:, 0], pts[:, 1], marker="o", ls="none", color=planetColor(body), markersize=2.5, \
+                markeredgewidth=0, alpha=0.3, zorder=2, gid="clone_encounter:{:s}".format(body))
+        drawn.add(body)
+
+    # The nominal's encounters, as stars
+    nominal_encountered = set()
+    for enc in encounters:
+        body = enc["body"]
+        if not plotted(body):
+            continue
+        ax.plot(enc["time_days"]/t_scale, hillUnits(body, enc["min_dist_au"]), marker="*", \
+                color=planetColor(body), markersize=10, ls="none", zorder=5, \
+                gid="encounter:{:s}".format(body))
+        drawn.add(body)
+        nominal_encountered.add(body)
+
+    # Draw the closest approach of a body without encounters as a ring, if within APPROACH_MAX_HILL
+    rings = set()
+    for body, dist in (closest_au or {}).items():
+        t_min = (closest_time_days or {}).get(body)
+        if (body == "Sun") or (body not in HILL_RADII_AU) or (body in drawn) or (dist is None) \
+            or (t_min is None):
+            continue
+        if hillUnits(body, dist) > APPROACH_MAX_HILL:
+            continue
+        ax.plot(t_min/t_scale, hillUnits(body, dist), marker="o", ls="none", markersize=6, \
+                markerfacecolor="none", markeredgecolor=planetColor(body), markeredgewidth=1.2, zorder=4, \
+                gid="closest:{:s}".format(body))
+        drawn.add(body)
+        rings.add(body)
+
+    ax.set_yscale("log")
+    ax.set_ylabel("distance [Hill radii]")
+
+    # List one legend entry per body in its colour, then one per kind of marker in black
+    approach_handles = [Line2D([], [], marker="o", ls="none", color=planetColor(b), markersize=6, \
+                               label="Moon" if b == "Luna" else b) \
+                        for b in PLANET_ORDER if b in drawn]
+    if not in_years:
+        approach_handles.append(Line2D([], [], color="0.55", lw=0.6, label="distance to the Earth"))
+    approach_handles.append(Line2D([], [], color="0.3", ls=":", lw=1, label="{:g} Hill radii".format(n_hill)))
+    if nominal_encountered:
+        approach_handles.append(Line2D([], [], marker="*", ls="none", color="k", markersize=9, \
+                                       label="encounter (nominal)"))
+    if clone_points:
+        approach_handles.append(Line2D([], [], marker="o", ls="none", color="k", markersize=2.5, \
+                                       markeredgewidth=0, alpha=0.5, label="encounter (clones)"))
+    if rings:
+        approach_handles.append(Line2D([], [], marker="o", ls="none", markersize=6, markerfacecolor="none", \
+                                       markeredgecolor="k", markeredgewidth=1.2, label="never closer"))
+
+    # The Lyapunov time, back from the start in a backward run, if the run is longer
+    x_lyap = None
+    if (lyapunov_years is not None) and (365.25*lyapunov_years <= abs(t_days[-1] - t_days[0])):
+        sign = 1.0 if t_days[-1] >= t_days[0] else -1.0
+        x_lyap = sign*365.25*lyapunov_years/t_scale
+
+    # The departure and the Lyapunov time on every panel
+    for ax in axs.flatten():
+        if k_dep > 0:
+            ax.axvline(t[k_dep], color="0.6", ls=":", lw=0.8)
+        if x_lyap is not None:
+            lyapunov_label = "Lyapunov time ({:.0f} years, {:s})".format(lyapunov_years, lyapunov_text or "")
+            ax.axvline(x_lyap, color=PLOT_LYAPUNOV_COLOR, ls="--", lw=0.9, \
+                label=lyapunov_label if ax is axes["a"] else None)
+        if ax in axs[-1]:
+            ax.set_xlabel(t_label)
+        if (ax.get_yscale() == "linear") and isinstance(ax.yaxis.get_major_formatter(), ScalarFormatter):
+            ax.ticklabel_format(axis="y", useOffset=False, style="plain")
+
+    ax_min, ax_max = min(t[0], t[-1]), max(t[0], t[-1])
+    axs[0, 0].set_xlim(ax_min, ax_max)
+
+    for ax in axs.flatten():
+        if ax is axes["encounters"]:
+            ax.legend(handles=approach_handles, fontsize=6.5, ncol=2, loc="best")
+            continue
+        handles, lab = ax.get_legend_handles_labels()
+        if lab:
+            ax.legend(fontsize=7, loc="best")
+
+    fig.tight_layout()
+
+    if file_path is not None:
+        fig.savefig(file_path, dpi=150)
+
+    return fig, axes
 
 
 def reboundSimulate(
@@ -2334,7 +3670,9 @@ def reboundSimulate(
         compute_megno: [bool] If True, after the requested integration run a purely gravitational
             integration of the nominal solution only, over the same span, and store its MEGNO
             series and verdict (see computeMegno and classifyMegno) under "megno" in the nominal
-            solution's diagnostics. Requires return_diagnostics=True, which is the only way the
+            solution's diagnostics. A run with clones and enough orbits for a verdict also does it
+            for the first MEGNO_CLONES clones, under "clones" in that entry (see lyapunovOverClones).
+            Requires return_diagnostics=True, which is the only way the
             result is returned; it is skipped with a warning otherwise, since the extra integration
             is as expensive as the nominal run. Default False.
         verbose: [bool] If True, print out the progress of the simulation.
@@ -2599,8 +3937,17 @@ def reboundSimulate(
         if show_progress:
             print("Computing the MEGNO of the nominal orbit (Newtonian gravity only, IAS15)...")
         megno = computeMegno(_make_task([state_vect_rot], [obj_name]))
-        megno["verdict"] = classifyMegno(megno["times_days"], megno["megno"], megno["a_au"])
+        megno["verdict"] = classifyMegno(megno["times_days"], megno["megno"], megno["a_au"], \
+                                         ln_delta=megno["ln_delta"])
         diagnostics[obj_name] = dict(diagnostics[obj_name], megno=megno)
+
+        # The same over some clones, in a run that has them and that is long enough for a verdict
+        if state_vect_realizations and (MEGNO_CLONES > 0) and (megno["verdict"]["status"] != "too_short"):
+            clone_tasks = [_make_task([s], [n]) \
+                for s, n in zip(mc_states[:MEGNO_CLONES], mc_names[:MEGNO_CLONES])]
+            if show_progress:
+                print("Computing the MEGNO of {:d} clones on {:d} core(s)...".format(len(clone_tasks), n_cpu))
+            megno["clones"] = lyapunovOverClones(clone_tasks, n_cpu=n_cpu)
 
     if return_diagnostics:
         return outputs, outputs_mc, diagnostics
@@ -2696,7 +4043,9 @@ if __name__ == "__main__":
                         help="After the integration, integrate the nominal solution again with "
                         "Newtonian gravity only (IAS15) and compute its MEGNO chaos indicator, "
                         "reporting whether it converges to 2 (regular orbit) or keeps growing "
-                        "(chaotic). MEGNO needs tens of orbital periods: use --days accordingly.")
+                        "(chaotic). MEGNO needs tens of orbital periods: use --days accordingly. With " \
+                        "clones (--mc), {:d} of them are integrated in the same way, sharing the cores, to give " \
+                        "the Lyapunov time over the clones.".format(MEGNO_CLONES))
 
     parser.add_argument("--verbose", action="store_true", help="Print out the progress of the simulation.")
 
@@ -2897,12 +4246,11 @@ if __name__ == "__main__":
         e_95ci_high = np.percentile(e_mc, 97.5)
         incl_95ci_low = np.percentile(incl_mc, 2.5)
         incl_95ci_high = np.percentile(incl_mc, 97.5)
-        Omega_95ci_low = np.percentile(Omega_mc, 2.5)
-        Omega_95ci_high = np.percentile(Omega_mc, 97.5)
-        omega_95ci_low = np.percentile(omega_mc, 2.5)
-        omega_95ci_high = np.percentile(omega_mc, 97.5)
-        f_95ci_low = np.percentile(f_mc, 2.5)
-        f_95ci_high = np.percentile(f_mc, 97.5)
+
+        # The angles' interval is taken about their circular mean (see _circularInterval)
+        Omega_95ci_low, Omega_95ci_high = _circularInterval(Omega_mc)
+        omega_95ci_low, omega_95ci_high = _circularInterval(omega_mc)
+        f_95ci_low, f_95ci_high = _circularInterval(f_mc)
 
         # Compute the standard deviation of the orbital elements
         a_std = ((a_95ci_high - a_95ci_low)/2.0)/1.96 # Use 95% CI to ignore outliers
@@ -2921,6 +4269,11 @@ if __name__ == "__main__":
         Omega_ci_str = f" +/- {np.degrees(Omega_std):.6f} [{np.degrees(Omega_95ci_low):10.6f}, {np.degrees(Omega_95ci_high):10.6f}]"
         omega_ci_str = f" +/- {np.degrees(omega_std):.6f} [{np.degrees(omega_95ci_low):10.6f}, {np.degrees(omega_95ci_high):10.6f}]"
         f_ci_str = f" +/- {np.degrees(f_std):.6f} [{np.degrees(f_95ci_low):10.6f}, {np.degrees(f_95ci_high):10.6f}]"
+
+        # An angle's interval that runs through 0 has low > high, which the report says
+        Omega_ci_str += " (across 0)" if Omega_95ci_low > Omega_95ci_high else ""
+        omega_ci_str += " (across 0)" if omega_95ci_low > omega_95ci_high else ""
+        f_ci_str += " (across 0)" if f_95ci_low > f_95ci_high else ""
 
 
     ### Compute the epoch of the final simulation
@@ -2968,6 +4321,12 @@ if __name__ == "__main__":
 
     # Estimate the divergence/Lyapunov timescale from the Monte Carlo ensemble (free when MC is run)
     lyap = estimateLyapunovFromMC(sim_outputs, sim_outputs_mc)
+
+    # The clone that represents the clones at the end of the run, a real orbit
+    representative = representativeOrbit(sim_outputs, sim_outputs_mc)
+
+    # The Lyapunov time to quote, for the warning on the final elements and the figure
+    lyapunov_years, lyapunov_text = lyapunovTimeToQuote(megno)
 
     # List of bodies for which the distance is tracked (planet_dists dict keys)
     dist_bodies = list(sim_outputs[0][3].keys())
@@ -3034,6 +4393,8 @@ if __name__ == "__main__":
         print(header + "   (nominal  +/- 1 sigma  [95% CI]):")
     else:
         print(header + "   (nominal):")
+    for line in _finalElementsWarningLines(lyapunov_years, achieved_days):
+        print("  " + line)
     print("")
     print("    a    = {:>13.6f}{:s}  {:s}".format(a_val, a_ci_str, a_units))
     print("    q    = {:>13.6f}{:s}  {:s}".format(q_val, q_ci_str, q_units))
@@ -3064,6 +4425,13 @@ if __name__ == "__main__":
                 "{:s} {:.1f}%".format(k, 100*v) for k, v in clone_classes["classes"].items())))
 
     print("-" * 78)
+
+    # The representative clone at the end
+    representative_lines = _representativeReportLines(representative, dist_unit_multiplier, a_units)
+    if representative_lines:
+        for line in representative_lines:
+            print("  " + line)
+        print("-"*78)
 
     # Close-encounter summary (minima tracked every integrator timestep, refined between steps).
     # Repeated Sun passages collapse into one line, printed where the first of them happened.
@@ -3224,6 +4592,11 @@ if __name__ == "__main__":
         f.write("peri = {:>10.6f}{:s} deg\n".format(np.degrees(sim_outputs[-1][2].omega), omega_ci_str))
         f.write("node = {:>10.6f}{:s} deg\n".format(np.degrees(sim_outputs[-1][2].Omega), Omega_ci_str))
         f.write("f    = {:>10.6f}{:s} deg\n".format(np.degrees(sim_outputs[-1][2].f), f_ci_str))
+
+        for line in _finalElementsWarningLines(lyapunov_years, achieved_days, above=True):
+            f.write(line + "\n")
+        if representative_lines:
+            f.write("\n" + "\n".join(representative_lines) + "\n")
 
         # Save the detected close encounters (Hill-sphere criterion, a fixed distance for the Sun).
         # The distances are the minima tracked at every internal integrator timestep and refined
@@ -3428,209 +4801,19 @@ if __name__ == "__main__":
                 f.write("node = {:>10.6f} deg\n".format(np.degrees(sim_outputs_mc[mc_name][-1][2].Omega)))
                 f.write("f    = {:>10.6f} deg\n".format(np.degrees(sim_outputs_mc[mc_name][-1][2].f)))
 
-    # Plot the orbital elements of the before and after simulation on the same plot (one subplot for each element)
-    fig, axs = plt.subplots(3, 3, figsize=(14, 10), sharex=True)
-
-    # Time in days
-    t = [simTimeToDays(x[0]) for x in sim_outputs]
-
-    a = [x[2].a*dist_unit_multiplier for x in sim_outputs]
-    e = [x[2].e for x in sim_outputs]
-    incl = [x[2].inc for x in sim_outputs]
-    Omega = [x[2].Omega for x in sim_outputs]
-    omega = [x[2].omega for x in sim_outputs]
-    f = [x[2].f for x in sim_outputs]
-
-    # Distance from the planets
-    planet_dists = [x[3] for x in sim_outputs]
-    earth_dist = [x["Earth"] for x in planet_dists]
-
-    # Find the time when the object exits the Earth's Hill sphere
-    earth_hill = HILL_RADII_AU["Earth"] # AU
-    exit_index = None
-    for i, dist in enumerate(earth_dist):
-        if dist > earth_hill:
-            exit_index = i
-            break
-
-    axs[0, 0].plot(t, a)
-    axs[0, 1].plot(t, e)
-    axs[1, 0].plot(t, np.degrees(incl))
-    axs[1, 1].plot(t, np.degrees(Omega))
-    axs[2, 0].plot(t, np.degrees(omega))
-    axs[2, 1].plot(t, np.degrees(f))
-
-    # Create filtered arrays for the exit from the Earth's Hill sphere
-    if exit_index is not None:
-        t_exit = t[exit_index:]
-        a_exit = a[exit_index:]
-        e_exit = e[exit_index:]
-        incl_exit = incl[exit_index:]
-        Omega_exit = Omega[exit_index:]
-        omega_exit = omega[exit_index:]
-        f_exit = f[exit_index:]
-
-        # Adjust Y axis limits for the exit from the Earth
-        axs[0, 0].set_ylim(ymin=min(a_exit), ymax=max(a_exit))
-        axs[0, 1].set_ylim(ymin=min(e_exit), ymax=max(e_exit))
-        axs[1, 0].set_ylim(ymin=min(np.degrees(incl_exit)), ymax=max(np.degrees(incl_exit)))
-        axs[1, 1].set_ylim(ymin=min(np.degrees(Omega_exit)), ymax=max(np.degrees(Omega_exit)))
-        axs[2, 0].set_ylim(ymin=min(np.degrees(omega_exit)), ymax=max(np.degrees(omega_exit)))
-        axs[2, 1].set_ylim(ymin=min(np.degrees(f_exit)), ymax=max(np.degrees(f_exit)))
-                           
-
-
-    # Plot the distance from the Earth
-    axs[0, 2].plot(t, np.array(earth_dist)*dist_unit_multiplier)
-
-    # Mark the exit from the Earth's Hill sphere
-    if exit_index is not None:
-        axs[0, 2].axvline(t[exit_index], color="red", linestyle="--", label="Exit from Earth's Hill sphere")
-
-        # Set the X axis limit so the maximum time is at the exit from the Earth's Hill sphere
-        axs[0, 2].set_xlim(xmax=t[exit_index])
-
-
-
-    # Plot the distance from the Sun + inner planets
-    inner_planets = ["Sun", "Mercury", "Venus", "Earth", "Luna", "Mars"]
-    for planet in inner_planets:
-        planet_dist = [x[3][planet] for x in sim_outputs]
-        axs[1, 2].plot(t, planet_dist, label=planet)
-
-    axs[1, 2].set_ylabel("Distance [AU]")
-    axs[1, 2].legend()
-
-    # Plot the distance from the outer planets
-    outer_planets = ["Jupiter", "Saturn", "Uranus", "Neptune"]
-    for planet in outer_planets:
-        planet_dist = [x[3][planet] for x in sim_outputs]
-        axs[2, 2].plot(t, planet_dist, label=planet)
-
-    axs[2, 2].set_ylabel("Distance [AU]")
-
-    # Start the outer-planet distance axis at zero, so the distances are read against the Sun
-    axs[2, 2].set_ylim(ymin=0)
-
-    axs[2, 2].legend()
-
-
-    # Mark the detected close encounters at the point of closest approach on the distance subplots.
-    # Every passage gets a star, but only the deepest one per body is named: an object in resonance
-    #   with a planet meets it over and over, and one text label per passage makes the panel
-    #   unreadable.
-    labeled_axes = set()
-    deepest_per_body = {}
-    for enc in encounters:
-        best = deepest_per_body.get(enc["body"])
-        if (best is None) or (enc["min_dist_au"] < best["min_dist_au"]):
-            deepest_per_body[enc["body"]] = enc
-
-    for enc in encounters:
-        body = enc["body"]
-        t_enc = enc["time_days"]
-        d_enc = enc["min_dist_au"]
-        name_it = (deepest_per_body[body] is enc)
-
-        # Determine which distance subplot(s) show this body
-        marks = []
-        if body in inner_planets:
-            marks.append((axs[1, 2], d_enc))
-        if body in outer_planets:
-            marks.append((axs[2, 2], d_enc))
-        if body == "Earth":
-            # The Earth-distance subplot is scaled by the reference-frame unit multiplier
-            marks.append((axs[0, 2], d_enc*dist_unit_multiplier))
-
-        for ax, d_plot in marks:
-
-            # Only add the legend label once per axis
-            label = "Close encounter" if ax not in labeled_axes else None
-            labeled_axes.add(ax)
-
-            ax.plot(t_enc, d_plot, marker="*", color="red", markersize=14, linestyle="none",
-                    zorder=5, label=label)
-
-            if name_it:
-                ax.annotate(body, (t_enc, d_plot), textcoords="offset points", xytext=(5, 5),
-                            color="red", fontsize=8)
-
-
-    # Set the axis labels
-    for ax in axs.flatten():
-
-        ax.set_xlabel("Time [days]")
-
-        # Disable offset and scientific notation
-        ax.ticklabel_format(useOffset=False, style='plain')
-
-
-    # Plot the MC realizations (all in thin alpha=0.5 lines)
-    for mc_name in sim_outputs_mc:
-
-        # Each realization gets its own time axis: a realization truncated early (for example by an
-        # impact) is shorter than the nominal solution, and plotting it against the nominal time
-        # axis would raise a dimension-mismatch error.
-        t_mc = [simTimeToDays(x[0]) for x in sim_outputs_mc[mc_name]]
-
-        a_mc = [x[2].a*dist_unit_multiplier for x in sim_outputs_mc[mc_name]]
-        e_mc = [x[2].e for x in sim_outputs_mc[mc_name]]
-        incl_mc = [x[2].inc for x in sim_outputs_mc[mc_name]]
-        Omega_mc = [x[2].Omega for x in sim_outputs_mc[mc_name]]
-        omega_mc = [x[2].omega for x in sim_outputs_mc[mc_name]]
-        f_mc = [x[2].f for x in sim_outputs_mc[mc_name]]
-        earth_dist = [x[3]["Earth"] for x in sim_outputs_mc[mc_name]]
-
-        axs[0, 0].plot(t_mc, a_mc, alpha=0.5, color='k', lw=0.5)
-        axs[0, 1].plot(t_mc, e_mc, alpha=0.5, color='k', lw=0.5)
-        axs[1, 0].plot(t_mc, np.degrees(incl_mc), alpha=0.5, color='k', lw=0.5)
-        axs[1, 1].plot(t_mc, np.degrees(Omega_mc), alpha=0.5, color='k', lw=0.5)
-        axs[2, 0].plot(t_mc, np.degrees(omega_mc), alpha=0.5, color='k', lw=0.5)
-        axs[2, 1].plot(t_mc, np.degrees(f_mc), alpha=0.5, color='k', lw=0.5)
-        axs[0, 2].plot(t_mc, np.array(earth_dist)*dist_unit_multiplier, alpha=0.5, color='k', lw=0.5)
-
-    
-    
-    axs[0, 0].set_ylabel("a [{:s}]".format(a_units))
-    axs[0, 1].set_ylabel("e")
-    axs[1, 0].set_ylabel("i [deg]")
-    # axs[1, 1] plots REBOUND Omega (ascending node); axs[2, 0] plots omega (argument of perihelion)
-    axs[1, 1].set_ylabel("node [deg]")
-    axs[2, 0].set_ylabel("peri [deg]")
-    axs[2, 1].set_ylabel("f [deg]")
-    axs[0, 2].set_ylabel("Earth distance [{:s}]".format(a_units))
-
-    # Only draw a legend on axes that actually have labeled artists (avoids the empty-legend warning)
-    for ax in axs.flatten():
-        handles, labels = ax.get_legend_handles_labels()
-        if labels:
-            ax.legend()
-
-    plt.tight_layout()
-
-    # Save the figure
-    plt.savefig(plot_png_path)
+    # Evolution of the orbit, the clones as percentile bands (see plotReboundOrbits)
+    clone_encounter_lists = {name: diag.get("encounters", []) for name, diag in clone_diag.items()}
+    plotReboundOrbits(sim_outputs, sim_outputs_mc, encounters, file_path=plot_png_path, \
+        dist_unit_multiplier=dist_unit_multiplier, length_units=a_units, representative=representative, \
+        lyapunov_years=lyapunov_years, lyapunov_text=lyapunov_text, n_hill=n_hill, \
+        clone_encounters=clone_encounter_lists, closest_au=nominal_diag.get("min_dist_au"), \
+        closest_time_days=nominal_diag.get("min_time_days"))
 
     # MEGNO evolution, in its own figure
     megno_png_path = None
     if (megno is not None) and megno["times_days"]:
-        megno_png_path = os.path.join(out_dir, "rebound_megno.png")
-        fig_m, ax_m = plt.subplots(figsize=(8, 4.5))
-
-        # MEGNO only gets a verdict after tens of orbital periods, so the span is always long
-        #   enough that days make an unreadable axis
-        megno_years = [t/365.25 for t in megno["times_days"]]
-
-        ax_m.plot(megno_years, megno["megno"], lw=1.2, label="<Y> (MEGNO)")
-        ax_m.axhline(2.0, color="k", ls="--", lw=1, label="2 (regular orbit)")
-        ax_m.axhspan(2 - MEGNO_REGULAR_TOL, 2 + MEGNO_REGULAR_TOL, color="0.85", zorder=0)
-        ax_m.set_xlabel("Time [years]")
-        ax_m.set_ylabel("<Y>")
-        ax_m.set_title("MEGNO of the nominal orbit (Newtonian gravity): {:s}".format(
-            megno["verdict"]["status"].replace("_", " ")))
-        ax_m.legend()
-        fig_m.tight_layout()
-        fig_m.savefig(megno_png_path)
+        megno_png_path = os.path.join(out_dir, "rebound_megno_lyapunov.png")
+        plotMegno(megno, file_path=megno_png_path)
 
     # Report the saved outputs
     ### Machine-readable results, so downstream analysis does not have to parse the text report ###
@@ -3726,6 +4909,7 @@ if __name__ == "__main__":
         "clone_encounters": {name: diag.get("encounters", []) for name, diag in clone_diag.items()},
         "energy_rel_drift": nominal_diag.get("energy_rel_drift"),
         "divergence": lyap,
+        "representative": representative, \
         "nominal": _elementSeries(sim_outputs),
         "monte_carlo": {name: _elementSeries(rows) for name, rows in sim_outputs_mc.items()},
     }
