@@ -328,6 +328,9 @@ MOID_PERCENTILES = (2.5, 16, 50, 84, 97.5)
 # Bottom of the close-approach panel, in Hill radii: where two orbits cross the MOID dives towards zero
 MOID_PLOT_MIN_HILL = 1e-3
 
+# Semi-major axis of Jupiter of the Tisserand parameter and the orbital class of the report [AU]
+A_JUPITER_TISSERAND = 5.204267
+
 # Sun passages closer than this count in the WHFast warning, although the Sun is listed out to
 # SUN_ENCOUNTER_AU: WHFast's fixed step fails only much closer in. Measured with _integrateParticles
 # and the default 0.5 d step against IAS15 over 100 yr (the Sun and five planets, gr_full, a = 1.27
@@ -2267,10 +2270,9 @@ def equivalentSphereRadius(mass_kg, density_kgm3):
 
         s = (3*m/(4*pi*rho))^(1/3)
 
-    which is the size radiationPressureBeta needs. Meteor work gives a mass (photometric, or from a
-    MetSim fit) and an assumed bulk density rather than a size, so the conversion belongs here
-    rather than in the user's head. Beta goes as m^(-1/3), so even a factor of 2 in the assumed
-    mass moves it by only 26%.
+    which is the size radiationPressureBeta needs, as meteor work gives a mass (photometric, or from
+    a MetSim fit) and an assumed bulk density. At a fixed mass beta goes as m^(-1/3)*rho^(-2/3), so a
+    factor of 2 in the mass changes it by a factor of 1.26.
 
     Arguments:
         mass_kg: [float] Meteoroid mass in kg.
@@ -2313,7 +2315,7 @@ def tisserandParameterJupiter(a, e, inc):
             that the parameter is not defined.
     """
 
-    a_jupiter = 5.204267  # AU
+    a_jupiter = A_JUPITER_TISSERAND
 
     if (a is None) or (a <= 0) or (e is None) or (e >= 1):
         return None
@@ -2339,7 +2341,7 @@ def borovickaClass(a, e, inc):
         [str] The class.
     """
 
-    return classifyBorovicka(a*(1.0 - e), e, inc)
+    return classifyBorovicka(a*(1.0 - e), e, inc, a_planet=A_JUPITER_TISSERAND)
 
 
 def tisserandAndClassSummary(orbits):
@@ -2354,15 +2356,16 @@ def tisserandAndClassSummary(orbits):
     Return:
         [dict] {
             "n": number of orbits,
-            "n_unbound": orbits without a T_J (unbound), left out of its statistics,
+            "n_unbound": orbits without a finite T_J (unbound), left out of its statistics,
             "tisserand_std": 1 sigma of T_J, (97.5% - 2.5%)/(2*1.96), or None without bound orbits,
             "tisserand_95ci": [2.5%, 97.5%] of T_J, or None,
             "classes": {class: fraction of the orbits}, the most frequent first,
         }
     """
 
+    # Leave the unbound and non-finite orbits out of the T_J statistics
     t_j = [tisserandParameterJupiter(o.a, o.e, o.inc) for o in orbits]
-    t_j = np.array([x for x in t_j if x is not None], dtype=float)
+    t_j = np.array([x for x in t_j if (x is not None) and np.isfinite(x)], dtype=float)
 
     classes = {}
     for o in orbits:
@@ -2378,8 +2381,19 @@ def tisserandAndClassSummary(orbits):
 
 
 def _tisserandAndClassReportLines(t_j, orbital_class, clones=None):
-    """ Lines of the report on the Tisserand parameter and the orbital class at the end of the run:
-    the nominal's, with the clones' spread (see tisserandAndClassSummary) when there are clones. """
+    """ Make the lines of the report on the Tisserand parameter and the orbital class of the nominal at
+    the end of the run, with the spread of the clones when there are clones.
+
+    Arguments:
+        t_j: [float or None] Tisserand parameter of the nominal, None if it is unbound.
+        orbital_class: [str] Orbital class of the nominal.
+
+    Keyword arguments:
+        clones: [dict] Summary of the clones from tisserandAndClassSummary(). None by default.
+
+    Return:
+        lines: [list] Lines of the report.
+    """
 
     if clones is None:
         lines = ["Tisserand parameter w.r.t. Jupiter and orbital class (Borovicka et al. 2005) at the end "
@@ -6019,7 +6033,8 @@ if __name__ == "__main__":
     import argparse
 
     from wmpl.MetSim.BackwardAtmIntegration import addBackwardArguments, atmosphereDescription, \
-        backwardStatesFromArguments, checkBackHeight, checkBackwardArguments, unusedBackwardArguments
+        backwardStatesFromArguments, checkBackHeight, checkBackwardArguments, massArgument, \
+        unusedBackwardArguments
     from wmpl.Utils.AtmosphereDensity import setAtmosphere
     from wmpl.Utils.Pickling import loadPickle
 
@@ -6085,7 +6100,8 @@ if __name__ == "__main__":
 
     size_group.add_argument("--radius", type=float, default=None,
                         help="Object radius in metres, used with --density to compute beta and "
-                        "include radiation forces. Purely gravitational if not given.")
+                        "include radiation forces. Purely gravitational if none of --beta, --radius "
+                        "and --mass is given.")
 
     parser.add_argument("--integrator", type=str.lower, default="ias15", choices=INTEGRATORS,
                         help="Integrator: ias15 (default; adaptive, accurate to machine precision), "
@@ -6227,8 +6243,6 @@ if __name__ == "__main__":
         if args.forward is not None:
             parser.error("--back_height and --back_time start a backward integration above the atmosphere, so they "
                 "cannot be used with --forward.")
-        checkBackwardArguments(parser, args)
-        setAtmosphere(args)
 
     elif unusedBackwardArguments(parser, args):
         parser.error("{:s} only apply to the run back through the atmosphere: give --back_height.".format(
@@ -6297,6 +6311,13 @@ if __name__ == "__main__":
             if checkpoint_seed is not None:
                 random_seed = checkpoint_seed
 
+    # --mass given without a value takes the photometric mass of the light curve, from which the run back
+    #   starts with --back_height
+    massArgument(parser, args, traj)
+    if args.back_height is not None:
+        checkBackwardArguments(parser, args)
+        setAtmosphere(args)
+
     # Start from the trajectory's reference point, or with --back_height from above the atmosphere, after running
     #   the nominal solution and each realization back through it to a common epoch
     jd_start = traj.jdt_ref
@@ -6316,9 +6337,11 @@ if __name__ == "__main__":
 
     ### Non-gravitational forces (off by default, as they need the object's size) ###
     beta = args.beta
+    if ((args.mass is not None) or (args.radius is not None)) and (not (args.density > 0)):
+        parser.error("--density must be positive, got {:g} kg/m^3.".format(args.density))
 
     # The orbit starts above the atmosphere with --back_height, so unless a size is given, the mass there sets beta.
-    #   --mass is then the mass of the run back, not a size
+    #   --mass is then the mass at the reference point, where the run back starts
     if args.back_height is not None:
         if (args.beta is None) and (args.radius is None):
             args.radius = equivalentSphereRadius(masses[0], args.density)
@@ -6328,9 +6351,6 @@ if __name__ == "__main__":
         # The mass sets beta, so it cannot be combined with another size
         if (args.beta is not None) or (args.radius is not None):
             parser.error("Give only one of --beta, --radius and --mass.")
-
-        if args.mass <= 0:
-            parser.error("--mass must be positive, got {:g} kg.".format(args.mass))
 
         args.radius = equivalentSphereRadius(args.mass, args.density)
 

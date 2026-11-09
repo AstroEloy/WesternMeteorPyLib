@@ -142,8 +142,8 @@ python -m wmpl.Rebound.REBOUND --help
 | `--integrator {ias15,whfast,trace}` | Which integrator to use. Default: `ias15`. See [Choosing an integrator](#choosing-an-integrator). |
 | `--dt DAYS` | Timestep in days for `whfast` and `trace`. Default: `0.5`. Must be positive. Ignored by `ias15`. |
 | `--beta BETA` | Include solar radiation pressure and Poynting–Robertson drag with this beta. |
-| `--radius METRES` | Object radius in metres. With `--density`, beta is computed from it. Purely gravitational if not given. |
-| `--mass KG` | Object mass in kg at the trajectory's reference point (e.g. a photometric mass). With `--density`, beta is computed from it. It is also the mass of the run back through the atmosphere with `--back_height`. |
+| `--radius METRES` | Object radius in metres. With `--density`, beta is computed from it. Purely gravitational if none of `--beta`, `--radius` and `--mass` is given. |
+| `--mass [KG]` | Object mass in kg at the trajectory's reference point. Without a value, the photometric mass of the light curve is used. With `--density`, beta is computed from it, or with `--back_height` from the mass at the top of the run back through the atmosphere, which starts from it. |
 | `--density KG_M3` | Bulk density in kg/m³, used with `--radius` or `--mass`. Default: `3000`. |
 | `--gr {gr_full,gr}` | General relativity. `gr_full` (default) is the post-Newtonian interaction between all pairs of bodies (EIH); `gr` is the Sun's post-Newtonian correction on every body (Anderson et al. 1975), 3.3× faster with the same results to ~1e-7 in a. See [General relativity](#general-relativity). |
 | `--no_sun_j2` | Leave out the Sun's J2. It is on by default (DE430's J2 = 2.11e-7, reference radius 696 000 km, about the Sun's IAU rotation pole). It keeps Mercury within 1 km of DE430 over 100 years (13 km without it); on meteoroids it is tiny, 0.02″ on the perihelion of a q = 0.14 AU orbit in 400 years. |
@@ -288,8 +288,10 @@ python -m wmpl.Rebound.REBOUND traj.pickle --days 36525 --mass 1e-6 --density 30
 ```
 
 The mass is turned into the radius of the sphere of that mass and density, `s = (3m/(4πρ))^(1/3)`.
-Since beta goes as `m^(-1/3)`, the assumed density and luminous efficiency matter less than they
-look: a factor of 2 in the mass moves beta by 26%.
+At a fixed mass, beta goes as `m^(-1/3)*rho^(-2/3)`. The mass, and through it the luminous efficiency
+of a photometric mass, enters as a cube root, so a factor of 2 in it changes beta by a factor of 1.26.
+The density enters more strongly: halving it raises beta by a factor of 1.59. `--mass 0` is the same
+as `--mass` without a value.
 
 For a spherical grain, `beta = 5.7425e-4*Q_pr/(rho*s)` with the density in kg/m³ and the radius in m.
 A 1 µm grain at 3000 kg/m³ gives beta = 0.19; a 1 cm meteoroid of the same density gives 1.9e-5. In
@@ -317,7 +319,7 @@ python -m wmpl.Rebound.REBOUND traj.pickle --days 36525 --back_time 2.0 --mass 0
 
 | Option | Meaning |
 | :--- | :--- |
-| `--mass KG` | Mass at the reference point. Required. |
+| `--mass [KG]` | Mass at the reference point. Required; without a value, the photometric mass of the light curve. |
 | `--mass_sigma KG` | Its 1-sigma uncertainty, drawn from a log-normal for each realization. Default: `0`. |
 | `--freeze_mass` | Keep the mass constant instead of growing it back. |
 | `--ablation_coeff S2_KM2` | Effective ablation coefficient, including the erosion of the body (sigma + eta), unless `--erosion_coeff` gives it apart. Default: `0.023`. |
@@ -329,7 +331,7 @@ python -m wmpl.Rebound.REBOUND traj.pickle --days 36525 --back_time 2.0 --mass 0
 | `--ga GAMMA_A` | Drag coefficient times shape coefficient. Default: `1.21`, MetSim's and the usual value in this high part of the trajectory; `DynamicMassFit` and `AlphaBeta` default to `0.55`. |
 | `--ga_sigma GAMMA_A` | Its 1-sigma uncertainty, drawn from a log-normal for each realization. Default: `0`. |
 | `--draw_unknowns` | Draw what is not known for each realization, for what is left at its default: the coefficient (`0.1 ± 0.1`), the density (`1500 ± 1300`), `--ga` (`1.10 ± 0.054`) and the mass (`± 0.3` of `--mass`). Needs `--mc`. It cannot be combined with `--erosion_coeff`. |
-| `--atm`, `--atmtime` | The MSIS model of the air density, and the time it is evaluated at. |
+| `--atm`, `--atmtime`, `--atmsw` | The MSIS model of the air density, the time it is evaluated at, and its solar and geomagnetic activity. |
 
 These options, apart from `--mass` and `--density`, are refused without `--back_height`. `--back_height` cannot be combined with `--forward`.
 

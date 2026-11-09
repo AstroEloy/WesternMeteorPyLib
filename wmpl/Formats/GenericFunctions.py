@@ -7,7 +7,6 @@ import time
 import numpy as np
 
 from wmpl.Trajectory.Trajectory import Trajectory
-from wmpl.Utils.AtmosphereDensity import addAtmosphereArguments
 from wmpl.Trajectory.GuralTrajectory import GuralTrajectory
 from wmpl.Utils.DragInitialVelocity import DEFAULT_TIME_LIMIT
 from wmpl.Utils.GeoidHeightEGM96 import mslToWGS84Height
@@ -503,10 +502,26 @@ def addSolverOptions(arg_parser, skip_velpart=False):
     arg_parser.add_argument('-o', '--enableOSM', 
         help="Enable OSM based groung plots. Internet connection required.", action="store_true")
 
-    arg_parser.add_argument('-k', '--kml', 
-        help="Save a 3D KML (*_3D.kml) with projected points, lines of sight and residuals.", action="store_true")
+    return arg_parser
 
-    # Atmosphere model for any density the solver evaluates; setAtmosphere() applies it after parsing
-    addAtmosphereArguments(arg_parser)
+
+
+def addKMLOptions(arg_parser):
+    """ Add the options of the 3D KML to the command line arguments parser of a solver that passes them on to
+        Trajectory (save_kml and kml_measured).
+
+    Arguments:
+        arg_parser: [ArgumentParser object] Command line arguments parser.
+
+    Return:
+        arg_parser: [ArgumentParser object] Parser with the KML options.
+    """
+
+    arg_parser.add_argument('-k', '--kml', \
+        help="Save a 3D KML (*_3D.kml) with the trajectory of the drag fit.", action="store_true")
+
+    arg_parser.add_argument('--kmlmeas', \
+        help="Save the 3D KML with the projected points, lines of sight and residuals of the measurements " \
+        "as well.", action="store_true")
 
     return arg_parser

@@ -12,9 +12,8 @@ import itertools
 import numpy as np
 import scipy.optimize
 
-from wmpl.Utils.AtmosphereDensity import setAtmosphere
-from wmpl.Formats.GenericFunctions import addSolverOptions, solveTrajectoryGeneric, MeteorObservation, \
-    prepareObservations, writeMiligInputFileMeteorObservation
+from wmpl.Formats.GenericFunctions import addKMLOptions, addSolverOptions, solveTrajectoryGeneric, \
+    MeteorObservation, prepareObservations, writeMiligInputFileMeteorObservation
 from wmpl.Trajectory.StationSystematics import stationSystematicErrors, systematicErrorSize
 from wmpl.Utils.Math import vectNorm, vectMag, angleBetweenSphericalCoords
 from wmpl.Utils.AtmosphereDensity import getAtmDensity_vect
@@ -2614,6 +2613,7 @@ if __name__ == "__main__":
 
     # Add other solver options
     arg_parser = addSolverOptions(arg_parser, skip_velpart=True)
+    arg_parser = addKMLOptions(arg_parser)
 
     arg_parser.add_argument('-p', '--velpart', metavar='VELOCITY_PART', \
         help="Fixed part from the beginning of the meteor on which the initial velocity estimation using the sliding fit will start. Default is 0.4 (40 percent), but for noisier data this might be bumped up to 0.5.", \
@@ -2651,9 +2651,6 @@ if __name__ == "__main__":
 
     # Parse the command line arguments
     cml_args = arg_parser.parse_args()
-
-    # Atmosphere model for any density the solver evaluates, also in its Monte Carlo processes
-    setAtmosphere(cml_args)
 
     #########################
 
@@ -2754,8 +2751,9 @@ if __name__ == "__main__":
         v_init_drag_ht=cml_args.vinitdraght, \
         show_jacchia=cml_args.jacchia,
         estimate_timing_vel=(False if cml_args.notimefit is None else cml_args.notimefit), \
-        fixed_times=cml_args.fixedtimes, mc_noise_std=cml_args.mcstd, enable_OSM_plot=cml_args.enableOSM, \
-        save_kml=cml_args.kml)
+        fixed_times=cml_args.fixedtimes, mc_noise_std=cml_args.mcstd, \
+        enable_OSM_plot=cml_args.enableOSM, save_kml=(cml_args.kml or cml_args.kmlmeas), \
+        kml_measured=cml_args.kmlmeas)
 
     # Solve the trajectory
     traj = solveTrajectoryGeneric(jdt_ref, meteor_list, dir_path, solver=cml_args.solver, **solver_kwargs)
