@@ -4379,6 +4379,7 @@ class Trajectory(object):
 
         # Move the path of a decelerating meteor by drag against the rotating air
         self.air_rotation = air_rotation
+
         # Drop the meteor by its free fall from the line
         self.gravity_free_fall = gravity_free_fall
 
@@ -4475,6 +4476,7 @@ class Trajectory(object):
         # Times from the beginning of the meteor and the displacements of a decelerating meteor across the
         #   line at those times, by drag against the rotating air (see calcAirRotationShift)
         self.air_rotation_shift = None
+
         # Times from the beginning of the meteor and the velocity of drag alone at those times, for the free
         #   fall of a decelerating meteor (see calcGravityDropScale)
         self.gravity_drop_velocity = None
