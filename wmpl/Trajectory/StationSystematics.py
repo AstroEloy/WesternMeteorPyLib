@@ -17,6 +17,7 @@ import numpy as np
 from wmpl.Trajectory.Trajectory import applyGravityDrop
 from wmpl.Utils.Math import findClosestPoints, vectMag, vectNorm
 from wmpl.Utils.TrajConversions import geo2Cartesian, raDec2ECI
+from wmpl.Utils.EarthRotation import inertialToECI
 
 
 # Minimum number of points of a station to measure its systematic error
@@ -190,7 +191,8 @@ def systematicErrorSize(traj, errors, meteors):
     along_list = []
     for meteor in meteors:
 
-        meas = np.array(raDec2ECI(meteor.ra_data, meteor.dec_data)).T
+        meas = inertialToECI(np.array(raDec2ECI(meteor.ra_data, meteor.dec_data)).T, \
+            getattr(traj, 'dut1', 0.0))
         jds = meteor.jdt_ref + np.array(meteor.time_data)/86400.0
         stat = np.array([geo2Cartesian(meteor.latitude, meteor.longitude, meteor.height, jd) for jd in jds])
         along_list.append(crossTrackResiduals(traj.state_vect_mini, traj.radiant_eci_mini, stat, meas)[1])

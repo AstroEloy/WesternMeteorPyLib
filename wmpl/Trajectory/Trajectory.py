@@ -54,6 +54,7 @@ from wmpl.Utils.Math import vectNorm, vectMag, meanAngle, findClosestPoints, RMS
     angleBetweenSphericalCoords, angleBetweenVectors, lineFunc, normalizeAngleWrap, confidenceInterval, \
     medianStddev
 from wmpl.Utils.Misc import valueFormat
+from wmpl.Utils.EarthRotation import deltaUT1, eciToInertial, inertialToECI
 from wmpl.Utils.OSTools import mkdirP
 from wmpl.Utils.Pickling import savePickle
 from wmpl.Utils.Plotting import savePlot
@@ -77,7 +78,7 @@ TIMING_RERUN_TOLERANCE = 1e-5
 class ObservedPoints(object):
     def __init__(self, jdt_ref, meas1, meas2, time_data, lat, lon, ele, meastype, station_id=None, \
         excluded_time=None, ignore_list=None, ignore_station=False, magnitudes=None, fov_beg=None, \
-        fov_end=None, obs_id=None, comment="", radec_jd=None):
+        fov_end=None, obs_id=None, comment="", radec_jd=None, dut1=0.0):
         """ Structure for containing data of observations from individual stations.
         
         Arguments:
@@ -128,6 +129,10 @@ class ObservedPoints(object):
                 computed at jdt_ref, as CAMS does. Give it for data that follows the passage of time during
                 the meteor, as RMS does: otherwise each line of sight is rotated by the Earth's rotation
                 since jdt_ref.
+            dut1: [float] UT1 - UTC (s). The directions of the measurements are converted from the frame of
+                the stars to the ECI coordinates of wmpl, which turn with the Earth by UTC (see
+                wmpl.Utils.EarthRotation). 0 by default, which takes the directions as turning with the
+                Earth by UTC already, e.g. azimuths and altitudes computed from a model in those coordinates.
         """
 
         ### INPUT DATA ###
@@ -145,6 +150,9 @@ class ObservedPoints(object):
         self.radec_jd = None
         if radec_jd is not None:
             self.radec_jd = np.array(radec_jd, dtype=np.float64)
+
+        # UT1 - UTC (s), by which the directions measured against the stars are turned into the ECI frame
+        self.dut1 = dut1
 
 
 
@@ -495,14 +503,18 @@ class ObservedPoints(object):
 
 
     def calcECI(self):
-        """ Calculate Earth-centered inertial coordinates from RA and Dec. """
+        """ Calculate Earth-centered inertial coordinates from RA and Dec. The R.A./Dec. are against the
+            stars, and the ECI coordinates of wmpl turn with the Earth by UTC, so they are turned by
+            UT1 - UTC.
+        """
 
         # Calculate measurement ECI coordinates for the planes intersection method
-        self.meas_eci = np.array(raDec2ECI(self.ra_data, self.dec_data)).T
+        self.meas_eci = inertialToECI(np.array(raDec2ECI(self.ra_data, self.dec_data)).T, self.dut1)
         self.x_eci, self.y_eci, self.z_eci = self.meas_eci.T
 
         # Calculate measurement ECI coordinates for the line of sight method
-        self.meas_eci_los = np.ascontiguousarray(np.array(raDec2ECI(self.ra_data_los, self.dec_data_los)).T)
+        self.meas_eci_los = np.ascontiguousarray(inertialToECI(np.array(raDec2ECI(self.ra_data_los, \
+            self.dec_data_los)).T, self.dut1))
         self.x_eci_los, self.y_eci_los, self.z_eci_los = self.meas_eci_los.T
 
 
@@ -591,8 +603,8 @@ class PlaneIntersection(object):
         if np.dot(self.obs1.meas_eci[0], self.radiant_eci) < np.dot(self.obs1.meas_eci[-1], self.radiant_eci):
             self.radiant_eci = -self.radiant_eci
 
-        # Calculate the radiant position in RA and Dec
-        self.radiant_eq = eci2RaDec(self.radiant_eci)
+        # Calculate the radiant position in RA and Dec, against the stars
+        self.radiant_eq = eci2RaDec(eciToInertial(self.radiant_eci, getattr(self.obs1, 'dut1', 0.0)))
 
 
         ###### Calculate the closest point of approach (CPA) from the stations to the radiant line,
@@ -3016,7 +3028,8 @@ def sampleMCVelocities(traj_list):
         # Recompute the orbit with the sampled velocity
         traj_sampled.orbit = calcOrbit(traj.radiant_eci_mini, traj_sampled.v_init, traj.v_avg, \
             traj.state_vect_mini, traj.rbeg_jd, stations_fixed=(not traj.orbit_los_success), \
-            reference_init=traj.orbit_los_success, v_init_stddev_direct=traj.v_init_stddev)
+            reference_init=traj.orbit_los_success, v_init_stddev_direct=traj.v_init_stddev, \
+            dut1=getattr(traj, 'dut1', 0.0))
 
         traj_list_sampled.append(traj_sampled)
 
@@ -3111,8 +3124,8 @@ def trajNoiseGenerator(traj, noise_sigma):
 
                 ###
 
-                # Calculate RA, Dec for the given point
-                ra, dec = eci2RaDec(meas_eci_noise)
+                # Calculate RA, Dec for the given point, against the stars as the measurements are
+                ra, dec = eci2RaDec(eciToInertial(meas_eci_noise, getattr(obs, 'dut1', 0.0)))
 
                 # Calculate azimuth and altitude of this direction vector
                 azim, elev = raDec2AltAz(ra, dec, jd, obs.lat, obs.lon)
@@ -4101,6 +4114,7 @@ class Trajectory(object):
     def __init__(self, jdt_ref, output_dir='.', max_toffset=None, meastype=4, verbose=True, v_init_part=None,\
         v_init_ht=None, estimate_timing_vel=True, monte_carlo=True, mc_runs=None, mc_pick_multiplier=1, \
         mc_noise_std=1.0, geometric_uncert=False, filter_picks=True, calc_orbit=True, show_plots=True, \
+        dut1=None, \
         show_jacchia=False, save_results=True, gravity_correction=True, gravity_factor=1.0, \
         gravity_decel=True, gravity_free_fall=True, \
         air_rotation=True, \
@@ -4170,6 +4184,12 @@ class Trajectory(object):
                 will be removed, and the trajectory will be recalculated.
             calc_orbit: [bool] If True, the orbit is calculates as well. True by default
             show_plots: [bool] Show plots of residuals, velocity, lag, meteor position. True by default.
+            dut1: [float] UT1 - UTC at the time of the meteor (s). None by default, which takes it from the
+                IERS tables (see wmpl.Utils.EarthRotation.deltaUT1). The Earth turns by UT1, and the
+                R.A./Dec. of the measurements are against the stars, with the azimuths and altitudes reduced
+                from them with UTC, as RMS and CAMS do. The lines of sight are turned by the rotation of the
+                Earth in UT1 - UTC, and the radiant and the orbit back. Give 0 for observations computed with
+                UTC as UT1, e.g. synthetic ones made with the conversions of wmpl.
             show_jacchia: [bool] Show the Jacchia fit on the plot with meteor dynamics. False by default.
             save_results: [bool] Save results of trajectory estimation to disk. True by default.
             gravity_correction: [bool] Apply the gravity drop when estimating trajectories. True by default.
@@ -4239,6 +4259,9 @@ class Trajectory(object):
 
         # Measurement type
         self.meastype = meastype
+
+        # UT1 - UTC (s), by which the lines of sight are turned into the ECI frame, which turns by UTC
+        self.dut1 = deltaUT1(jdt_ref) if dut1 is None else float(dut1)
 
         # Directory where the trajectory estimation results will be saved
         self.output_dir = output_dir
@@ -4626,7 +4649,7 @@ class Trajectory(object):
         obs = ObservedPoints(self.jdt_ref, meas1, meas2, time_data, lat, lon, ele, station_id=station_id, 
             meastype=self.meastype, excluded_time=excluded_time, ignore_list=ignore_list, ignore_station=ignore_station, 
             magnitudes=magnitudes, fov_beg=fov_beg, fov_end=fov_end, obs_id=obs_id, comment=comment,
-            radec_jd=radec_jd)
+            radec_jd=radec_jd, dut1=getattr(self, 'dut1', 0.0))
             
         # Add observations to the total observations list
         self.observations.append(obs)
@@ -6075,7 +6098,7 @@ class Trajectory(object):
                 # Calculate the right ascension and declination of the modelled point from the observer's 
                 # point of view
                 stat_rad_eci = rad_cpa - stat
-                model_ra, model_dec = eci2RaDec(stat_rad_eci)
+                model_ra, model_dec = eci2RaDec(eciToInertial(stat_rad_eci, getattr(obs, 'dut1', 0.0)))
 
                 obs.model_ra[i] = model_ra
                 obs.model_dec[i] = model_dec
@@ -6470,6 +6493,9 @@ class Trajectory(object):
             out_str += 'Azimuth +north of due east for meas1, Zenith angle for meas2\n'
         
         out_str += "\n"
+
+        # UT1 - UTC, by which the lines of sight were turned into the ECI frame (see EarthRotation)
+        out_str += "UT1 - UTC: {:+.4f} s\n\n".format(getattr(self, 'dut1', 0.0))
 
 
 
@@ -8473,8 +8499,8 @@ class Trajectory(object):
         # Normalize the radiant vector to a unit vector
         self.avg_radiant = vectNorm(avg_radiant)
 
-        # Calculate the radiant position in RA and Dec
-        self.radiant_eq = eci2RaDec(self.avg_radiant)
+        # Calculate the radiant position in RA and Dec, against the stars
+        self.radiant_eq = eci2RaDec(eciToInertial(self.avg_radiant, getattr(self, 'dut1', 0.0)))
 
         if self.verbose:
             print('Multi-Track Weighted IP radiant:', np.degrees(self.radiant_eq))
@@ -8763,8 +8789,8 @@ class Trajectory(object):
             # Normalize radiant direction
             self.radiant_eci_mini = vectNorm(self.radiant_eci_mini)
 
-            # Convert the minimized radiant solution to RA and Dec
-            self.radiant_eq_mini = eci2RaDec(self.radiant_eci_mini)
+            # Convert the minimized radiant solution to RA and Dec, against the stars
+            self.radiant_eq_mini = eci2RaDec(eciToInertial(self.radiant_eci_mini, getattr(self, 'dut1', 0.0)))
 
             if self.verbose:
                 print('Position and radiant LMS solution:')
@@ -8781,8 +8807,8 @@ class Trajectory(object):
             # Normalize radiant direction
             self.radiant_eci_mini = vectNorm(self.radiant_eci_mini)
 
-            # Convert the minimized radiant solution to RA and Dec
-            self.radiant_eq_mini = eci2RaDec(self.radiant_eci_mini)
+            # Convert the minimized radiant solution to RA and Dec, against the stars
+            self.radiant_eq_mini = eci2RaDec(eciToInertial(self.radiant_eci_mini, getattr(self, 'dut1', 0.0)))
 
             # Calculate the state vector
             self.state_vect_mini = moveStateVector(self.state_vect, self.radiant_eci_mini, 
@@ -9193,7 +9219,8 @@ class Trajectory(object):
 
             self.orbit = calcOrbit(self.radiant_eci_mini, self.v_init, self.v_avg, self.state_vect_mini, \
                 self.rbeg_jd, stations_fixed=(not self.orbit_los_success), \
-                reference_init=self.orbit_los_success, v_init_stddev_direct=self.v_init_stddev)
+                reference_init=self.orbit_los_success, v_init_stddev_direct=self.v_init_stddev, \
+                dut1=getattr(self, 'dut1', 0.0))
 
             if self.verbose:
                 print(self.orbit.__repr__(v_init_ht=self.v_init_ht))
