@@ -146,7 +146,8 @@ def testWithoutTheCorrectionTheLineIsOff():
         Trajectory.md (3.7 m and 2.7 arcsec for 0.5 s), so that the test above measures the correction.
     """
 
-    traj, begin, radiant_eci = _observeAgainstTheStars(0.0, monte_carlo=False)
+    # The amounts were measured with the fit of the angles
+    traj, begin, radiant_eci = _observeAgainstTheStars(0.0, monte_carlo=False, los_fit='angles')
     traj = traj.run()
 
     assert 3.0 < _distanceFromLine(traj.state_vect_mini, begin, radiant_eci) < 4.5
