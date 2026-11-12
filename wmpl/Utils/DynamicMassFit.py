@@ -42,7 +42,7 @@ from wmpl.Trajectory.Trajectory import applyGravityDrop
 
 
 # Lowest height of the fragment simulation (m)
-SIM_HT_MIN = 15000
+SIM_HT_MIN = 13000
 
 
 def _rotationVelocity(eci_pos):
@@ -1167,7 +1167,7 @@ if __name__ == "__main__":
         help='Atmosphere profile file to take the air density from, for both the dynamic mass and the final '
         'simulation, instead of the MSIS model. It is read and interpolated as OpenDarkflight does, so a dark '
         'flight run with the same file continues in the same atmosphere. It has to cover the heights from the '
-        'top of the fit window down to 15 km. See --atm_profile_type for the formats.')
+        'top of the fit window down to 13 km. See --atm_profile_type for the formats.')
 
     arg_parser.add_argument('--atm_profile_type', metavar='TYPE', type=str, default='wrf', \
         choices=PROFILE_TYPES, \

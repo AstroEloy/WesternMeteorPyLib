@@ -112,7 +112,7 @@ deceleration is barely affected, since the rotation adds an almost constant offs
 
 From the evaluation point, a single-body MetSim simulation (`MetSimErosion`, with erosion and
 fragmentation off) follows the body until its speed relative to the air drops below `--vkill`, or it
-reaches 15 km. The simulation uses Γ = 0.7 and A = 1.21 regardless of `--ga`, on purpose: with the same ΓA
+reaches 13 km. The simulation uses Γ = 0.7 and A = 1.21 regardless of `--ga`, on purpose: with the same ΓA
 as the dynamic mass the simulated path would not depend on it at all.
 
 The simulation starts at the evaluation point of the solver's trajectory, with its gravity drop, and moves
@@ -192,7 +192,7 @@ instead of 36 s.
 NRLMSIS 2.0 or NRLMSISE-00 with `--atm`, evaluated at the time of the trajectory unless `--atmtime` gives
 another one, with the measured solar and geomagnetic activity unless `--atmsw constant` is given.
 The Monte Carlo realizations use the same model. The end-of-ablation simulation fits MetSim's density
-polynomial only over the heights it goes through, from 15 km up to its start: a single polynomial fitted up
+polynomial only over the heights it goes through, from 13 km up to its start: a single polynomial fitted up
 to 180 km, as before, misses the stratosphere by 10–30%.
 
 **With `--atm_profile`**, the density (and the winds, see below) come from a profile file instead. Two
@@ -217,7 +217,7 @@ The profile is read and evaluated exactly as OpenDarkflight does, without import
 On OpenDarkflight's example files the density and the velocity relative to the air agree with
 OpenDarkflight's to 1e-15 and 1e-12 m/s.
 
-**The profile has to cover the heights needed**, from 15 km up to the top of the fit window. Outside its
+**The profile has to cover the heights needed**, from 13 km up to the top of the fit window. Outside its
 range nothing is extrapolated: OpenDarkflight extrapolates above the top of a profile in its own way, and
 doing it differently here would break the continuity the profile is for. A radiosonde that bursts below
 the window is refused with a message saying which heights are missing. ERA5 on pressure levels reaches
@@ -354,7 +354,7 @@ Monte Carlo, or the `Monte Carlo` folder was not kept next to the trajectory pic
 Monte Carlo error estimation.
 
 **"The atmosphere profile … covers X to Y km, but A to B km are needed".** The profile does not reach the
-top of the fit window or does not go down to 15 km. Use a deeper profile (ERA5 on pressure levels reaches
+top of the fit window or does not go down to 13 km. Use a deeper profile (ERA5 on pressure levels reaches
 about 48 km), or lower the top of the window.
 
 **Few or no Monte Carlo realizations simulated.** Realizations whose speed relative to the air is already
