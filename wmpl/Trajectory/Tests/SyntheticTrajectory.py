@@ -11,7 +11,6 @@ from wmpl.Trajectory.Trajectory import Trajectory, applyGravityDrop
 from wmpl.Trajectory.Trajectory import EARTH_ROTATION_RATE
 from wmpl.Utils.AtmosphereDensity import getAtmDensity_vect
 from wmpl.Utils.Math import vectMag
-from wmpl.Utils.Physics import earthRotationVelocity
 from wmpl.Utils.TrajConversions import altAz2RADec, cartesian2Geo, eci2RaDec, geo2Cartesian, \
     raDec2AltAz_vect, raDec2ECI
 
@@ -68,7 +67,8 @@ class DragMeteor(object):
         # Compute the speed of the ground along the line, which the drag takes off the inertial speed
         v_rotation = 0.0
         if ground_drag:
-            v_rotation = np.dot(earthRotationVelocity(self.top_eci), -self.radiant_eci)
+            v_rotation = np.dot(np.cross(np.array([0.0, 0.0, EARTH_ROTATION_RATE]), self.top_eci), \
+                -self.radiant_eci)
 
         # Tabulate the air density with height along the line
         len_table = np.linspace(0, 400e3, 401)
