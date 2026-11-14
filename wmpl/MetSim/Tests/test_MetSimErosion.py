@@ -240,6 +240,8 @@ def initialDirection(const):
 def referenceRun(const):
     """ Integrate MetSim's single-body equations in 3D over a spherical Earth with RK4 in 0.1 ms steps, with
         the wind, and with gravity and the Coriolis acceleration if const.gravity_3d, evaluated at every step.
+        Without const.gravity_3d only the part of gravity along the path is in the velocity, as MetSim drops
+        the body across the path only in its height.
 
     Arguments:
         const: [Constants object] Constants of the single body.
@@ -283,6 +285,12 @@ def referenceRun(const):
                 omega = MetSimErosion.EARTH_ROTATION_RATE*np.array([0.0, np.cos(const.latitude), \
                     np.sin(const.latitude)])
                 acc = acc - 2*np.cross(omega, s[3:6])
+
+        # Otherwise only the part of gravity along the path through the air
+        else:
+            u_hat = u/np.linalg.norm(u)
+            r_hat = (s[:3] - centre)/np.linalg.norm(s[:3] - centre)
+            acc = acc - MetSimErosion.G0*(const.r_earth/(const.r_earth + h))**2*np.dot(u_hat, r_hat)*u_hat
 
         return np.concatenate([s[3:6], acc, [-K*const.sigma*s[6]**(2/3.0)*rho*np.linalg.norm(u)**3]])
 
@@ -432,11 +440,12 @@ def _backwardFrom(const, frag):
         back.radiant_azimuth = np.arctan2(np.dot(radiant, np.cross(north, up)), np.dot(radiant, north))
         back.latitude = np.arcsin(np.dot(axis, up))
 
-    # The 2D path is a straight line, whose zenith angle grows going down. The (vv, vh) velocity components do
-    #   not follow it, so they cannot give it
+    # The run back starts along the motion at the end, the 2D line tilted by the speed of the drop below it.
+    #   The zenith angle of the line grows going down, and the (vv, vh) components do not follow it
     else:
-        back.zenith_angle = np.arcsin((const.r_earth + const.h_init)/(const.r_earth + frag.h) \
-            *np.sin(const.zenith_angle))
+        zenith_line = np.arcsin((const.r_earth + const.h_init) \
+            /(const.r_earth + frag.h + frag.h_grav_drop_total)*np.sin(const.zenith_angle))
+        back.zenith_angle = zenith_line - frag.v_grav_drop/frag.v
 
     return back
 
