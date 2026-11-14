@@ -465,13 +465,14 @@ def _roundTripErrors(gravity_3d, dt):
 
 def testBackwardRunReturnsToTheStartOfAForwardRun():
     """ In 2D and with gravity in 3D, running back from where a forward run stopped recovers the starting speed
-        and mass, the mass growing back from 0.73 to 1 kg. The error is first order in the time step, 10 times
-        smaller with 10 times smaller steps, so it comes from the integration and not from the backward run. """
+        and mass, the mass growing back from 0.73 to 1 kg. With the mass, the speed and the length integrated
+        together, the error is below 1e-5 already at the default time step, and the two runs end within a
+        step of each other. """
 
     for gravity_3d in [False, True]:
         errors = [np.abs(_roundTripErrors(gravity_3d, dt)) for dt in [0.005, 0.0005]]
         assert errors[1][0] < 1e-4 and errors[1][1] < 5e-4 and errors[1][2] < 1e-3, errors[1]
-        assert np.all(errors[0][:2] > 7*errors[1][:2]), errors
+        assert np.all(errors[0][:2] < 1e-5) and (errors[0][2] < 0.006), errors
 
 
 def testBackwardRunStopsAtHKillOrTKill():

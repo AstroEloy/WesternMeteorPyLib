@@ -140,8 +140,9 @@ def test_the_step_is_at_most_one_millisecond():
 
 
 def test_the_default_step_leaves_the_speed_within_two_metres_per_second_from_a_deep_start():
-    """ From 50 km, 1 kg at 20 km/s, with the ablation coefficient that grows it most in this test. The step error is
-        of first order, so a step 10 times finer gives the error to about 10%. MetSim's 5 ms leaves about 5 m/s. """
+    """ From 50 km, 1 kg at 20 km/s, with the ablation coefficient that grows it most in this test. With the mass,
+        the speed and the length integrated together, the default step of the run back and MetSim's 5 ms both
+        leave the speed within 0.1 m/s of a step 50 times finer. """
 
     sv = _stateVector(50e3, 20000.0)
 
@@ -157,8 +158,8 @@ def test_the_default_step_leaves_the_speed_within_two_metres_per_second_from_a_d
     v_default, m_default = run(BACKWARD_MAX_DT)
     v_metsim, _ = run(0.005)
 
-    assert abs(v_default - v_fine) < 2.0 and abs(m_default/m_fine - 1) < 0.003
-    assert abs(v_metsim - v_fine) > 3.0
+    assert abs(v_default - v_fine) < 0.1 and abs(m_default/m_fine - 1) < 0.003
+    assert abs(v_metsim - v_fine) < 0.1
 
 
 def _erodedBody(erosion_height_change=-1.0):

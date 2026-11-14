@@ -14,6 +14,9 @@ and what the options are for.
 - [Dynamic mass and end of ablation](DynamicMassFit.md) — the mass of a fireball from its
   deceleration, where ablation ends, Monte Carlo uncertainties, atmosphere profiles and winds, and the
   hand-over to a dark flight.
+- [The MetSim ablation model](MetSim.md) — what the erosion simulation computes, gravity, stepping through
+  time, erosion into grains, the fragmentation entries, checks against an exact solution, old fits run again,
+  and how to choose the time step.
 - [DynestyMetSim](../Dynesty/README.md) — nested-sampling fits of the erosion ablation model to a
   meteor light curve and dynamics.
 - [Orbit dissimilarity criteria](OrbitSimilarity.md) — measuring how similar two orbits are, which
