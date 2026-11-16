@@ -339,13 +339,19 @@ class DragFit(object):
         log_rho = np.log(getAtmDensity_vect(np.array(lat_atm), np.array(lon_atm), np.maximum(ht_atm, 0.0), \
             self.traj.jdt_ref))
 
-        # Take the density of the atmosphere profile where it covers the heights
-        if self.atm_profile is not None:
-            log_rho = self._profileLogDensity(ht_atm, log_rho)
-
         sort_ind = np.argsort(ht_atm)
         self.ht_atm = ht_atm[sort_ind]
         self.log_rho_atm = log_rho[sort_ind]
+
+        # Take the density of the atmosphere profile where it covers the heights, tabulated at its own levels
+        #   so that it is interpolated between them as in OpenDarkflight
+        if self.atm_profile is not None:
+            levels = self.atm_profile.heights
+            levels = levels[(levels > self.ht_atm[0]) & (levels < self.ht_atm[-1])]
+            ht_table = np.union1d(self.ht_atm, levels)
+            log_msis = np.interp(ht_table, self.ht_atm, self.log_rho_atm)
+            self.ht_atm, self.log_rho_atm = ht_table, self._profileLogDensity(ht_table, log_msis)
+
         self.rho_grid = np.exp(np.interp(self.ht_grid, self.ht_atm, self.log_rho_atm))
         self._updateAirOffset()
 
@@ -1427,7 +1433,7 @@ class DragFit(object):
         out.append("The star * marks the segments where K grows significantly (more than 2 sigma). K std " \
             + "is the relative uncertainty of K at the segment end.")
         out.append("Dyn pres is the dynamic pressure rho*v^2 at the segment beginning, with the velocity " \
-            + "relative to the air, assumed at rest relative to the ground.")
+            + "relative to the ground, without the winds of an atmosphere profile.")
         out.append("The final dynamic mass is the mass of the leading body at the last point for the " \
             + "assumed Gamma*A and density, m = (Gamma*A/(K*rho_m^(2/3)))^3. Only the uncertainty of K is " \
             + "propagated.")
@@ -1439,7 +1445,7 @@ class DragFit(object):
 
 
 
-def spreadScan(traj, knot_hts, spread_step=250.0, spread_max=None, **kwargs):
+def spreadScan(traj, knot_hts, spread_step=250.0, spread_max=None, return_fits=False, **kwargs):
     """ Fit the drag model with the fragmentations as jumps and spread over a range of heights below them,
         as how spread the last fragmentation was is not fixed by the motion alone. The spreads which fit as
         well as the best one within Delta chi2 <= 4 are acceptable. The result is the fit with jumps, and the
@@ -1456,6 +1462,7 @@ def spreadScan(traj, knot_hts, spread_step=250.0, spread_max=None, **kwargs):
         spread_step: [float] Step of the spreads (m). 250 m by default.
         spread_max: [float] Largest spread (m). None by default, down to the last point from the lowest
             fragmentation within the observed part.
+        return_fits: [bool] Also return the fits of all spreads, as a sixth value. False by default.
         **kwargs: Keyword arguments for DragFit.
 
     Return:
@@ -1499,6 +1506,9 @@ def spreadScan(traj, knot_hts, spread_step=250.0, spread_max=None, **kwargs):
     log_k_arr = np.log([fit.ballisticCoeffAtLength(len_arr)[0] for fit in fits])
     fits[0].log_k_spread = (len_arr, np.max(np.abs(log_k_arr[delta_chi2 <= 4.0] - log_k_arr[0]), axis=0))
 
+
+    if return_fits:
+        return fits[0], spreads, delta_chi2, log_k_last, log_k_std, fits
 
     return fits[0], spreads, delta_chi2, log_k_last, log_k_std
 

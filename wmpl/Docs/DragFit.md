@@ -147,28 +147,38 @@ meteorite the mass of that `K` for its own shape and density.
 
 The dark flight starts at the last observed point, where the drag fit already flies on with a constant `K`.
 OpenDarkflight takes `K` directly (`ballistic_coeff`, its pull request #45) and gives the meteorite the mass of
-that `K` for its shape and density, and with the same profile in both, the dark flight starts in the same air.
-The summary compares the speeds of the two models 0.25 to 1 km below the hand-over, which have to agree. WMPL
-does not import OpenDarkflight: it writes its inputs and, with `--run`, runs it from its own environment and
-reads its outputs.
+that `K` for its shape and density. Both take the density and the winds of the same profile, which has to cover
+the starting heights (the hand-over stops otherwise, as is `--no_winds` refused), so the dark flight starts in
+the air the drag fit ended in. The speed handed over is the speed relative to the ground the drag of the fit
+acts on, so that `K` gives the same deceleration on both sides, and the summary compares the speeds of the two
+models 0.25 to 1 km below the hand-over, which have to agree. The vertical wind of a profile is only used by
+OpenDarkflight. WMPL does not import OpenDarkflight: it writes its inputs and, with `--run`, runs it from its
+own environment and reads its outputs.
 
 The uncertainty of `K` at the end is dominated by how spread the last fragmentation was. Every spread within
 `Delta chi2 <= 4` is equally likely, and every clone is one of those fits with its parameters drawn from their
 covariance, so `K` and the speed keep their correlation (a larger `K` comes with a lower speed) and the
 one-sided range the spread gives. On the synthetic sets of the knots, this mixture covered the true `K` in
-82-85% of the events within its central 68% and in 90-95% within its central 95%.
+82-85% of the events within its central 68% and in 90-95% within its central 95%. The parameters are drawn as a
+linear propagation of the noise of the points, without the bounds of the fit, which clipping would bias. The
+falls are measured from the nominal state, the fit with jumps (the `K` of DragFit), or the best spread if the
+jumps do not fit the data.
 
 Every clone also gets its own line, which moves its starting point across the line and turns its direction
 together: the line of one of the Monte Carlo trajectories of the solution if it was solved with the Monte
 Carlo (the `<name>_mc_uncertainties.pickle` the solver saves in the `Monte Carlo` directory next to the
 trajectory pickle, found by default), or else a line drawn from the covariance of the line-of-sight fit. Only
 the line is taken from the Monte Carlo, as the drag fit gives the motion along it. Every clone can also get a
-shape and a density drawn for its meteorite.
+shape and a density drawn for its meteorite, and with `--mc_runs` its own Monte Carlo of OpenDarkflight adds
+its statistical wind errors (15% in speed and 5 deg in direction by default, set with `--odf_option`). The
+falls are then those of the Monte Carlo runs; the unperturbed run of every clone stays in `falls.csv` with
+`mc_run` 0. Every OpenDarkflight run with a Monte Carlo uses all the cores, so `--nproc` is 2 by default.
 
 The fragments of the last fragmentation (`--fragments`) start at its height with the state of the fit there
 and a `K` from that of the leading body after the jump to `--frag_k_max` times it, log-uniform: smaller bodies
-of the same shape and density. Their Monte Carlo runs get the sideways kick of Passey and Melosh (1980) for
-that ratio of radii. OpenDarkflight does not ablate them, so their `K` stays that of the breakup.
+of the same shape and density as the leading body they broke from. Their Monte Carlo runs get the sideways kick
+of Passey and Melosh (1980) for that ratio of radii. OpenDarkflight does not ablate them, so their `K` stays
+that of the breakup.
 
 | Flag | Description |
 | :--- | :--- |
@@ -181,10 +191,10 @@ that ratio of radii. OpenDarkflight does not ablate them, so their `K` stays tha
 | `--shapes`, `--drag_model` | Shapes of the meteorite for OpenDarkflight, one drawn for every clone and fragment, and its drag model. Those of OpenDarkflight by default. |
 | `--fragments`, `--frag_k_max` | Number of fragments of the last fragmentation (0 by default) and the largest `K` of a fragment over that of the leading body (10 by default). |
 | `--end_ht` | Height where the dark flight ends (km). |
-| `--mc_runs` | Monte Carlo runs of OpenDarkflight for every clone and fragment, for the winds, the kicks of the fragments and anything set with `--odf_option`. |
+| `--mc_runs` | Monte Carlo runs of OpenDarkflight for every clone and fragment, with its statistical wind errors, the kicks of the fragments and anything set with `--odf_option`. |
 | `--odf_option` | Further OpenDarkflight option, e.g. `'Monte Carlo.wind_speed_sigma=0.15'`. Can be repeated. |
-| `--run` | Run OpenDarkflight (`--odf_python` of its environment, from `--odf_dir`, `--nproc` at a time) and collect the falls. |
-| `--collect` | Only collect the falls of runs already done. |
+| `--run` | Run OpenDarkflight (`--odf_python` of its environment, from `--odf_dir`, `--nproc` at a time, 2 by default) and collect the falls. |
+| `--collect` | Only collect the falls of runs already done; the trajectory pickle is not read. |
 
 The output directory gets `handover.json` (the nominal state, the clones, the fragments, the scan and the
 settings), one input per clone under `clones/` and per fragment under `fragments/`, the nominal one under
@@ -194,6 +204,8 @@ motion from the nominal fall.
 In Python, the same three steps:
 
 ```python
+import os
+
 from wmpl.Utils.AtmosphereProfile import AtmosphereProfile
 from wmpl.Utils.DragFitDarkFlight import findMcUncertainties, loadMcLines, prepareHandover, runOdf, \
     summarizeFalls
@@ -207,11 +219,14 @@ handover, ini_paths = prepareHandover(traj, "out_dir", [35000.0, 30000.0], Atmos
     mc_lines=mc_lines, drag_model='dfn', shapes=['sphere', 'brick'], mc_runs=5, n_fragments=100)
 
 # Run OpenDarkflight from its own environment, or by hand on the inputs
-runOdf(ini_paths, "/path/to/envs/opendf/bin/python", "/path/to/OpenDarkflight", n_proc=8)
+runOdf(ini_paths, "/path/to/envs/opendf/bin/python", "/path/to/OpenDarkflight", n_proc=2)
 
 # Collect the falls, also later with loadHandover("out_dir")
 print(summarizeFalls("out_dir", handover))
 ```
+
+`prepareHandover()` empties the run directories first, as OpenDarkflight names its outputs after the mass and
+those of an earlier run would be read again.
 
 ---
 

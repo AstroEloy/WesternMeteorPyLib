@@ -142,8 +142,8 @@ class TrajectorySamples(object):
                 height. None by default.
             decel: [float] Deceleration of the drag model (m/s^2), positive when the meteor slows down. None
                 by default.
-            dyn_pressure: [float] Dynamic pressure rho*v^2, with the velocity relative to the air, assumed
-                at rest relative to the ground (Pa). None by default.
+            dyn_pressure: [float] Dynamic pressure rho*v^2, with the velocity relative to the ground, without
+                the winds of an atmosphere profile (Pa). None by default.
             k: [float] Ballistic coefficient of the drag model (m^2/kg). None by default.
             log_k_std: [float] Standard deviation of the natural logarithm of the ballistic coefficient. None
                 by default.
@@ -422,7 +422,7 @@ def sampleTrajectory(traj, beg_ht, end_ht, sample_step, show_plots=False, by_tim
         print('Vstd is the 1 sigma uncertainty of Vel from the noise of the points, without the ' \
             + 'uncertainty of the trajectory solution or the bias of the drag model.')
         print('Decel is the deceleration of the drag model, Dyn pres the dynamic pressure rho*Vgnd^2, ' \
-            + 'with the air at rest relative to the ground.')
+            + 'without the winds of an atmosphere profile.')
 
         # Report the largest dynamic pressure among the samples
         if traj_samples.t_est:

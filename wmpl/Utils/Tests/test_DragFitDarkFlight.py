@@ -19,7 +19,10 @@ import io
 import os
 from types import SimpleNamespace
 
+import copy
+
 import numpy as np
+import pytest
 
 from wmpl.Trajectory.Trajectory import lineFromFrame
 from wmpl.Utils.AtmosphereProfile import AtmosphereProfile
@@ -55,8 +58,8 @@ def clonedHandover(geometry=True):
 
 
 def testTheClonesComeFromTheAcceptableSpreads():
-    """ Every clone comes from a spread within Delta chi2 <= 4, the nominal K is that of the fit with jumps,
-        and a larger K comes with a lower speed.
+    """ Every clone comes from a spread within Delta chi2 <= 4, a larger K comes with a lower speed, and as
+        the jump does not fit this spread fragmentation, the nominal state is that of the best spread.
     """
 
     traj, _ = fragmentedTrajectory(SPREAD)
@@ -70,29 +73,39 @@ def testTheClonesComeFromTheAcceptableSpreads():
     assert len(clones) == N_CLONES
     assert set(state['spread'] for state in clones) <= set(acceptable)
     assert len(set(state['spread'] for state in clones)) > 1
-    assert abs(nominal['k']/lastBallisticCoeff(fitDrag(traj, knot_hts=[HT_FRAG])) - 1) < 1e-9
     assert np.corrcoef(np.log(k_arr), vel_arr)[0, 1] < -0.5
+
+    delta_chi2 = np.array(scan['delta_chi2'])
+    assert delta_chi2[0] > 4.0
+    assert nominal['spread'] == spreads[np.argmin(delta_chi2)]
+    best_fit = fitDrag(traj, knot_hts=[HT_FRAG], knot_spread=nominal['spread'])
+    assert abs(nominal['k']/lastBallisticCoeff(best_fit) - 1) < 1e-9
 
 
 
 def testTheNominalStateIsThatOfTheSamples():
-    """ The nominal state at the last point is the one SampleTrajectoryPositions gives there for the same fit:
-        position, ground-fixed radiant and speed relative to the ground.
+    """ For a fragmentation which is a jump, the nominal state at the last point is that of the fit with
+        jumps, at the position and in the ground-fixed direction which SampleTrajectoryPositions gives there
+        for the same fit, with the speed relative to the ground the drag of the fit acts on, the inertial
+        speed less the rotation of the Earth along the trajectory.
     """
 
-    traj, _ = fragmentedTrajectory(SPREAD)
-    nominal, _, _, _ = clonedHandover()
-
+    traj, _ = fragmentedTrajectory()
     with contextlib.redirect_stdout(io.StringIO()):
+        nominal, _, _, _ = handoverClones(traj, [HT_FRAG], n_clones=1)
         samples = sampleTrajectory(traj, nominal['time'], nominal['time'], 1.0, by_time=True, \
             knot_hts=[HT_FRAG])
+    best_fit = fitDrag(traj, knot_hts=[HT_FRAG])
+
+    assert nominal['spread'] == 0.0
 
     assert abs(np.degrees(samples.lat[0]) - nominal['lat']) < 1e-6
     assert abs(np.degrees(samples.lon[0]) - nominal['lon']) < 1e-6
     assert abs(samples.ht[0] - nominal['ht']) < 1.0
     assert abs(np.degrees(samples.azim_norot[0]) - nominal['azim']) < 1e-6
     assert abs(np.degrees(samples.elev_norot[0]) - nominal['elev']) < 1e-6
-    assert abs(samples.vel_norot[0] - nominal['vel']) < 0.1
+    vel_ground = best_fit.velocityAtLength(np.array([best_fit.len_last]))[0] - best_fit.v_rotation
+    assert abs(nominal['vel'] - vel_ground) < 0.1
 
 
 
@@ -219,22 +232,24 @@ def testTheLinesOfTheClonesAreDrawn():
 
 
 def testTheFragmentsStartAtTheLastFragmentation():
-    """ The fragments start at the height of the last fragmentation with the speed of the fit with jumps
-        there, and a K between that of the leading body after the jump and FRAG_K_MAX times it.
+    """ The fragments start at the height of the last fragmentation with the speed of the nominal fit there,
+        and a K between that of the leading body after the fragmentation and FRAG_K_MAX times it.
     """
 
     traj, _ = fragmentedTrajectory(SPREAD)
-    _, _, fragments, _ = clonedHandover(geometry=False)
-    jump_fit = fitDrag(traj, knot_hts=[HT_FRAG])
+    nominal, _, fragments, _ = clonedHandover(geometry=False)
+    nominal_fit = fitDrag(traj, knot_hts=[HT_FRAG], knot_spread=nominal['spread'])
 
-    len_knot = jump_fit.ramp_beg[jump_fit.pen_weight == 0][0]
-    k_after = jump_fit.ballisticCoeffAtLength(np.array([len_knot + 2.0]))[0][0]
+    knot = np.where(nominal_fit.pen_weight == 0)[0][0]
+    len_knot = nominal_fit.ramp_beg[knot]
+    len_after = len_knot + nominal_fit.ramp_len[knot]
+    k_after = np.exp(nominal_fit._logK(nominal_fit.params, np.array([len_after]))[0])
     k_factors = np.array([state['k']/k_after for state in fragments])
 
     assert len(fragments) == N_FRAGMENTS
     assert np.allclose([state['ht'] for state in fragments], HT_FRAG, atol=1.0)
     assert np.allclose([state['vel_inertial'] for state in fragments], \
-        jump_fit.velocityAtLength(np.array([len_knot]))[0], atol=1.0)
+        nominal_fit.velocityAtLength(np.array([len_knot]))[0], atol=1.0)
     assert np.all(k_factors > 1 - 1e-6) and np.all(k_factors < FRAG_K_MAX)
     assert np.allclose(k_factors, [state['k_factor'] for state in fragments], rtol=1e-6)
 
@@ -329,9 +344,18 @@ def testTheHandoverIsPreparedAndItsFallsCollected(tmp_path):
     profile = loadProfile(tmp_path/'profile.csv')
     out_dir = str(tmp_path/'handover')
 
+    # Leave the outputs of an earlier run of another mass in a run directory
+    stale_dir = os.path.join(out_dir, 'clones', 'clone_0001')
+    os.makedirs(stale_dir)
+    writeFakeOdfRun(stale_dir, 9.0, 9.0)
+    os.rename(os.path.join(stale_dir, 'nominal_1.5_kg.txt'), os.path.join(stale_dir, 'nominal_850.0_g.txt'))
+
     with contextlib.redirect_stdout(io.StringIO()):
         handover, ini_paths = prepareHandover(traj, out_dir, [HT_FRAG], profile, n_clones=6, seed=2, \
-            n_fragments=3, shapes=['sphere', 'brick'], density_sigma=100.0, mc_runs=2, drag_model='dfn')
+            n_fragments=3, shapes=['sphere', 'brick'], density_sigma=100.0, mc_runs=2, drag_model='dfn', \
+            odf_options=['Monte Carlo.wind_speed_sigma=0.2'])
+
+    assert os.listdir(stale_dir) == ['clone_0001_df_params.ini']
 
     # The inputs: the nominal one without a Monte Carlo, the fragments with their kicks
     assert len(ini_paths) == 1 + 6 + 3
@@ -346,6 +370,8 @@ def testTheHandoverIsPreparedAndItsFallsCollected(tmp_path):
     assert all(config['Monte Carlo']['mc_enable'] == 'True' for config in configs[1:])
     assert len(set(config['Monte Carlo']['random_seed'] for config in configs[1:])) == 9
     assert all(config['Meteorite']['drag_model'] == 'dfn' for config in configs)
+    assert all(config['Monte Carlo']['wind_error_mode'] == 'statistical' for config in configs[1:])
+    assert all(config['Monte Carlo']['wind_speed_sigma'] == '0.2' for config in configs[1:])
     for config, state in zip(configs[7:], handover['fragments']):
         assert config['Deviating Fragments']['v_perp_model'] == 'passey_melosh'
         assert abs(float(config['Deviating Fragments']['pm_radius_ratio']) - state['k_factor']) < 1e-4
@@ -376,6 +402,66 @@ def testTheHandoverIsPreparedAndItsFallsCollected(tmp_path):
     assert os.path.isfile(os.path.join(out_dir, 'falls.png'))
     for v_fit in nominal['check_vel']:
         assert "{:.0f}/{:.0f} m/s".format(v_fit, v_fit) in summary
-    assert "Fragments of the last fragmentation: 9 falls of 3 fragments" in summary
+    assert "Leading body: 12 falls of 6 clones (Monte Carlo runs)" in summary
+    assert "Fragments of the last fragmentation: 6 falls of 3 fragments" in summary
     assert len(glob.glob(os.path.join(out_dir, 'clones', 'clone_*'))) == 6
 
+
+
+
+
+def testTheHandoverRefusesAnIncoherentAtmosphereOrSettings(tmp_path):
+    """ The profile has to cover the starting heights and keep its winds, as OpenDarkflight takes them, and
+        the seed and the largest K factor of the fragments have to make sense.
+    """
+
+    traj, _ = fragmentedTrajectory(SPREAD)
+
+    with contextlib.redirect_stdout(io.StringIO()):
+
+        with pytest.raises(ValueError, match="would not start in the air"):
+            prepareHandover(traj, str(tmp_path/'low'), [HT_FRAG], loadProfile(tmp_path/'low.csv', \
+                ht_max=40000.0), n_clones=2)
+
+        with pytest.raises(ValueError, match="winds"):
+            prepareHandover(traj, str(tmp_path/'still'), [HT_FRAG], loadProfile(tmp_path/'still.csv', \
+                use_winds=False), n_clones=2)
+
+        with pytest.raises(ValueError, match="seed"):
+            handoverClones(traj, [HT_FRAG], n_clones=2, seed=-1)
+
+        with pytest.raises(ValueError, match="frag_k_max"):
+            handoverClones(traj, [HT_FRAG], n_clones=2, frag_k_max=0.5)
+
+
+
+def testTheCovarianceLinesAreCentredOnTheSolution():
+    """ The lines drawn from the covariance are centred on the line of the solution, also when it is not
+        the line of the frame, as after the Monte Carlo of the solver.
+    """
+
+    traj, _ = fragmentedTrajectory(SPREAD)
+    middle, _, radiant, axes = traj.los_frame
+    point = middle - 0.8*traj.los_frame[1]*radiant
+
+    # Move the line of the solution 50 m away from that of the frame
+    moved = copy.copy(traj)
+    moved.state_vect_mini = np.array(traj.state_vect_mini) + 50.0*axes[0]
+
+    rng = np.random.default_rng(4)
+    moves = np.array([lineMove(moved, point, drawLine(moved, rng))[0] for _ in range(400)])
+
+    assert np.linalg.norm(np.mean(moves, axis=0)) < 1.0
+    assert 0.5*np.sqrt(np.trace(traj.los_covariance)) < np.median(np.linalg.norm(moves, axis=1))
+
+
+
+def testSeveralNominalOutputsAreRefused(tmp_path):
+    """ Two nominal outputs in one run directory belong to different runs, and are not read. """
+
+    writeFakeOdfRun(str(tmp_path), 1.0, 2.0)
+    os.rename(str(tmp_path/'nominal_1.5_kg.txt'), str(tmp_path/'nominal_850.0_g.txt'))
+    writeFakeOdfRun(str(tmp_path), 1.0, 2.0)
+
+    with pytest.raises(ValueError, match="nominal outputs"):
+        readOdfRun(str(tmp_path))

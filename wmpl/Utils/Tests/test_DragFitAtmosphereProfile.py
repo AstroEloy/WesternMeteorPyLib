@@ -94,8 +94,8 @@ def testTheDensityOfTheProfileIsUsed(tmp_path):
     drag_fit_denser = fitDrag(traj, atm_profile=denser)
 
     len_arr = np.linspace(drag_fit.len_first, drag_fit.len_last, 20)
-    assert np.allclose(drag_fit.airDensityAtLength(len_arr), profile.density(drag_fit.heightAtLength(len_arr)), \
-        rtol=1e-6)
+    rho_profile = profile.density(drag_fit.heightAtLength(len_arr))
+    assert np.allclose(drag_fit.airDensityAtLength(len_arr), rho_profile, rtol=1e-6)
     assert abs(1.2*lastBallisticCoeff(drag_fit_denser)/lastBallisticCoeff(drag_fit) - 1) < 0.01
 
 
@@ -146,3 +146,23 @@ def testATailWindLowersTheAirSpeed(tmp_path):
 
     profile.use_winds = False
     assert np.array_equal(fitDrag(traj, atm_profile=profile).params, still.params)
+
+
+
+def testTheDensityIsThatOfEveryLevelOfTheProfile(tmp_path):
+    """ The density of the model is that of the profile at each of its levels, interpolated between them as
+        OpenDarkflight does, also where a single level departs from its neighbours.
+    """
+
+    traj = solvedTrajectory()
+    profile = loadProfile(tmp_path/'profile.csv')
+
+    # Make the level at 60 km 50% denser than the levels around it
+    ht_bump = 60000.0
+    profile.densities[np.argmin(np.abs(profile.heights - ht_bump))] *= 1.5
+    drag_fit = fitDrag(traj, atm_profile=profile)
+
+    ht_arr = np.array([ht_bump - 100.0, ht_bump, ht_bump + 60.0])
+    rho_fit = np.exp(np.interp(ht_arr, drag_fit.ht_atm, drag_fit.log_rho_atm))
+    assert np.allclose(rho_fit, profile.density(ht_arr), rtol=1e-9)
+
