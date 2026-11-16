@@ -12,6 +12,7 @@ import argparse
 
 import numpy as np
 
+from wmpl.Utils.AtmosphereProfile import addProfileArguments, profileFromArguments
 from wmpl.Utils.DragFit import DragFit, plotDragFit, spreadScan
 from wmpl.Utils.TrajConversions import cartesian2Geo, derotatedRadiantAltAz
 from wmpl.Utils.Math import lineAndSphereIntersections
@@ -252,7 +253,7 @@ class TrajectorySamples(object):
 
 
 def sampleTrajectory(traj, beg_ht, end_ht, sample_step, show_plots=False, by_time=False, drag_above=False, \
-    knot_hts=None):
+    knot_hts=None, atm_profile=None):
     """ Given the trajectory, beginning, end and step in meters, this function will sample the positions on
         the trajectory and compute the geographical coordinates, the ground-fixed azimuth and elevation of the
         radiant, the velocity with its uncertainty, the deceleration, the dynamic pressure and the ballistic
@@ -275,6 +276,8 @@ def sampleTrajectory(traj, beg_ht, end_ht, sample_step, show_plots=False, by_tim
         knot_hts: [list] Heights of the fragmentations (m), e.g. those of the flares, where the ballistic
             coefficient can jump, with the uncertainty from their spread (see wmpl.Utils.DragFit.spreadScan).
             None by default.
+        atm_profile: [AtmosphereProfile] Atmosphere profile of the drag fit (see wmpl.Utils.DragFit). None by
+            default, for the MSIS model.
 
     Return:
         traj_samples: [TrajectorySamples object] Sampled positions.
@@ -283,9 +286,9 @@ def sampleTrajectory(traj, beg_ht, end_ht, sample_step, show_plots=False, by_tim
     # Fit the drag model of the motion along the trajectory, with the fragmentations if their heights are
     #   given
     if knot_hts is None:
-        drag_fit = DragFit(traj, drag_above=drag_above)
+        drag_fit = DragFit(traj, drag_above=drag_above, atm_profile=atm_profile)
     else:
-        drag_fit = spreadScan(traj, knot_hts, drag_above=drag_above)[0]
+        drag_fit = spreadScan(traj, knot_hts, drag_above=drag_above, atm_profile=atm_profile)[0]
 
     if by_time:
 
@@ -469,6 +472,9 @@ if __name__ == "__main__":
 
     arg_parser.add_argument('-t', '--time', action='store_true', help='Sample by time instead of height. The begin, end and step are then given in seconds relative to the reference time of the trajectory, and -1 does not mean the observed begin and end.')
 
+    # Add the options of an atmosphere profile
+    addProfileArguments(arg_parser)
+
     arg_parser.add_argument('-c', '--csv', metavar='CSV_PATH', type=str, \
         help='Save the samples to the given CSV file.')
 
@@ -522,7 +528,8 @@ if __name__ == "__main__":
 
     # Run trajectory sampling
     traj_samples = sampleTrajectory(traj, beg_ht, end_ht, sample_step, show_plots=True, \
-        by_time=cml_args.time, drag_above=cml_args.dragabove, knot_hts=knot_hts)
+        by_time=cml_args.time, drag_above=cml_args.dragabove, knot_hts=knot_hts, \
+        atm_profile=profileFromArguments(cml_args))
 
     # Save the samples
     if cml_args.csv is not None:

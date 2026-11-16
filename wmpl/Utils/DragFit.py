@@ -18,9 +18,13 @@ v_air/v:
 
     dE/dL = -2*K*rho*(v_air/v)**2*E + g_along
 
-and is solved exactly, iterating on that ratio. The logarithm of K is a sum of non-negative ramps in L, which
-is fitted to the lengths and times of all used points with a robust loss and a small penalty on the growth
-of K.
+and is solved exactly, iterating on that ratio. With an atmosphere profile (wmpl.Utils.AtmosphereProfile, the
+files OpenDarkflight reads), the air density is taken from it where it covers the heights, and the MSIS model
+is scaled to join it above and below. Its winds then add their component along the direction of motion to
+v_rot, so a dark flight with the same file continues in the same air.
+
+The logarithm of K is a sum of non-negative ramps in L, which is fitted to the lengths and times of all used
+points with a robust loss and a small penalty on the growth of K.
 
 Above the first observed point the meteor is assumed to move without drag, only accelerated by gravity, as
 it barely decelerates in the thin air. Optionally, K can be kept at its first value instead. As K can only
@@ -71,6 +75,7 @@ from wmpl.Trajectory.Trajectory import dropTimeOrigin
 from wmpl.Trajectory.Trajectory import applyGravityDrop
 from wmpl.Trajectory.Trajectory import freeFallDrop
 from wmpl.Utils.AtmosphereDensity import getAtmDensity_vect
+from wmpl.Utils.AtmosphereProfile import addProfileArguments, profileFromArguments
 from wmpl.Utils.Math import findClosestPoints, vectMag
 from wmpl.Utils.Physics import ballisticCoeffMass, earthRotationSpeed
 from wmpl.Utils.Pickling import loadPickle
@@ -132,7 +137,7 @@ def usedPoints(traj):
 
 class DragFit(object):
     def __init__(self, traj, n_knots=None, h_top=200000.0, penalty=1.0, drag_above=False, max_bending=5.0, \
-        max_vel_growth=0.1, knot_hts=None, knot_spread=0.0):
+        max_vel_growth=0.1, knot_hts=None, knot_spread=0.0, atm_profile=None):
         """ Fit the drag model to the lengths and times of the used points of the given trajectory.
 
         Arguments:
@@ -158,6 +163,9 @@ class DragFit(object):
                 the observed part. None by default.
             knot_spread: [float] Height below each of knot_hts over which the ballistic coefficient grows
                 without penalty (m). 0 by default, for a jump.
+            atm_profile: [AtmosphereProfile] Take the air density from this profile where it covers the
+                heights, and its winds unless its use_winds is False. None by default, for the MSIS model
+                and air at rest relative to the ground.
         """
 
         self.traj = traj
@@ -172,6 +180,13 @@ class DragFit(object):
         # Speed of the Earth's rotation along the trajectory, by which the inertial speed exceeds the speed
         #   relative to the air
         self.v_rotation = earthRotationSpeed(traj)
+        self.atm_profile = atm_profile
+
+        # Horizontal direction of motion relative to the ground (east, north), for the winds
+        lat, lon, _ = cartesian2Geo(traj.jdt_ref, *self.state_vect)
+        azim, elev, _ = derotatedRadiantAltAz(traj.v_init*self.radiant_eci, self.state_vect, traj.jdt_ref, \
+            lat, lon)
+        self.motion_en = -np.array([np.sin(azim)*np.cos(elev), np.cos(azim)*np.cos(elev)])
 
         # Get the data
         self.time_data, self.len_data = usedPoints(traj)
@@ -323,16 +338,67 @@ class DragFit(object):
         # Compute the air density along the line, and interpolate its logarithm with height
         log_rho = np.log(getAtmDensity_vect(np.array(lat_atm), np.array(lon_atm), np.maximum(ht_atm, 0.0), \
             self.traj.jdt_ref))
+
+        # Take the density of the atmosphere profile where it covers the heights
+        if self.atm_profile is not None:
+            log_rho = self._profileLogDensity(ht_atm, log_rho)
+
         sort_ind = np.argsort(ht_atm)
         self.ht_atm = ht_atm[sort_ind]
         self.log_rho_atm = log_rho[sort_ind]
         self.rho_grid = np.exp(np.interp(self.ht_grid, self.ht_atm, self.log_rho_atm))
+        self._updateAirOffset()
 
 
         # Compute the components of gravity along the line (positive when descending) and perpendicular to it
         g = G_SURFACE*(EARTH.EQUATORIAL_RADIUS/(EARTH.EQUATORIAL_RADIUS + self.ht_grid))**2
         self.g_grid = -g*np.gradient(self.ht_grid, self.len_grid)
         self.g_perp_grid = np.sqrt(np.maximum(g**2 - self.g_grid**2, 0.0))
+
+
+
+    def _profileLogDensity(self, ht_arr, log_rho_msis):
+        """ Replace the MSIS density by that of the atmosphere profile where it covers the heights, and scale
+            the MSIS density above and below it to join the profile at its top and bottom.
+
+        Arguments:
+            ht_arr: [ndarray] Heights (m).
+            log_rho_msis: [ndarray] Logarithms of the MSIS density at the heights.
+
+        Return:
+            [ndarray] Logarithms of the air density at the heights.
+        """
+
+        profile = self.atm_profile
+        sort_ind = np.argsort(ht_arr)
+
+        log_rho = np.array(log_rho_msis, dtype=float)
+        inside = (ht_arr >= profile.ht_min) & (ht_arr <= profile.ht_max)
+        log_rho[inside] = np.log(profile.density(ht_arr[inside]))
+
+        # Join the MSIS model to the profile at its edges
+        for ht_edge, outside in ((profile.ht_max, ht_arr > profile.ht_max), (profile.ht_min, \
+            ht_arr < profile.ht_min)):
+
+            log_msis_edge = np.interp(ht_edge, ht_arr[sort_ind], log_rho_msis[sort_ind])
+            log_rho[outside] += np.log(profile.density(ht_edge)) - log_msis_edge
+
+
+        return log_rho
+
+
+
+    def _updateAirOffset(self):
+        """ Compute along the grid the speed by which the inertial speed exceeds the speed relative to the
+            air: the rotation of the Earth along the trajectory and the wind of the atmosphere profile along
+            the direction of motion, at the nearest height the profile covers.
+        """
+
+        self.v_air_offset = np.full(len(self.len_grid), self.v_rotation)
+
+        if (self.atm_profile is not None) and self.atm_profile.use_winds:
+            ht_arr = np.clip(self.ht_grid, self.atm_profile.ht_min, self.atm_profile.ht_max)
+            self.v_air_offset += self.atm_profile.wind(ht_arr).dot(self.motion_en)
 
 
 
@@ -369,12 +435,13 @@ class DragFit(object):
         len_arr = self.len_grid[self.i_first:self.i_last + 1]
         rho = self.rho_grid[self.i_first:self.i_last + 1]
         g = self.g_grid[self.i_first:self.i_last + 1]
+        v_offset = self.v_air_offset[self.i_first:self.i_last + 1]
         dlen = np.diff(len_arr)
 
         # The drag acts on the speed relative to the air, which moves with the ground, so 2*K*rho is scaled by
         #   the squared ratio of that speed to the inertial one, iterating from the inertial speed
         drag_scale = 1.0
-        for _ in range(DRAG_SCALE_ITERATIONS if self.v_rotation else 1):
+        for _ in range(DRAG_SCALE_ITERATIONS if np.any(v_offset) else 1):
 
             # Compute the integral of 2*K*rho from the first point
             a = 2*np.exp(self._logK(params, len_arr))*rho*drag_scale
@@ -386,7 +453,7 @@ class DragFit(object):
             energy = (0.5*params[1]**2 + grav)/exp_phi
             vel = np.sqrt(np.maximum(2*energy, 1.0))
 
-            drag_scale = (1 - self.v_rotation/vel)**2
+            drag_scale = (1 - v_offset/vel)**2
 
         # Integrate the time
         time = params[0] + np.concatenate([[0.0], np.cumsum(0.5*(1/vel[1:] + 1/vel[:-1])*dlen)])
@@ -594,7 +661,7 @@ class DragFit(object):
             else:
                 a = 0.0
 
-            energy = self._airEnergyStep(energy, a, g, -dlen, vel[i])
+            energy = self._airEnergyStep(energy, a, g, -dlen, vel[i], self.v_air_offset[i])
 
             # Stop when the velocity has grown too much, as K above the beginning is not known
             if np.sqrt(max(2*energy, 0.0)) > (1 + self.max_vel_growth)*vel[self.i_first]:
@@ -612,7 +679,7 @@ class DragFit(object):
             a = 2*np.exp(log_k_grid[i])*0.5*(self.rho_grid[i] + self.rho_grid[i + 1])
             g = 0.5*(self.g_grid[i] + self.g_grid[i + 1])
 
-            energy = self._airEnergyStep(energy, a, g, dlen, vel[i])
+            energy = self._airEnergyStep(energy, a, g, dlen, vel[i], self.v_air_offset[i])
 
             # Stop if the meteor comes to a halt (e.g. an Earth-grazer going up)
             if energy <= 0.5:
@@ -665,7 +732,7 @@ class DragFit(object):
 
 
 
-    def _airEnergyStep(self, energy, a, g, dlen, vel):
+    def _airEnergyStep(self, energy, a, g, dlen, vel, v_offset):
         """ Advance the energy equation by dlen, with the drag term scaled for the speed relative to the air
             at the mean speed of the step.
 
@@ -675,16 +742,17 @@ class DragFit(object):
             g: [float] Component of gravity along the line (m/s^2).
             dlen: [float] Step along the line (m), negative when going up.
             vel: [float] Inertial speed at the start (m/s).
+            v_offset: [float] Speed by which the inertial speed exceeds the speed relative to the air (m/s).
 
         Return:
             [float] Specific kinetic energy at the end of the step (J/kg).
         """
 
         # Estimate the speed at the end of the step with the scale at its start
-        energy_end = self._energyStep(energy, a*(1 - self.v_rotation/vel)**2, g, dlen)
+        energy_end = self._energyStep(energy, a*(1 - v_offset/vel)**2, g, dlen)
         vel_mean = 0.5*(vel + np.sqrt(max(2*energy_end, 1.0)))
 
-        return self._energyStep(energy, a*(1 - self.v_rotation/vel_mean)**2, g, dlen)
+        return self._energyStep(energy, a*(1 - v_offset/vel_mean)**2, g, dlen)
 
 
 
@@ -767,6 +835,7 @@ class DragFit(object):
         self.ht_grid = self._wgs84HeightEci(line_eci - drop_grid) + np.interp(self.len_grid, self.len_atm, \
             self.geoid_atm)
         self.rho_grid = np.exp(np.interp(self.ht_grid, self.ht_atm, self.log_rho_atm))
+        self._updateAirOffset()
 
 
 
@@ -1117,7 +1186,7 @@ class DragFit(object):
 
         # Take the drag on the speed relative to the air
         k_arr, _ = self.ballisticCoeffAtLength(len_arr)
-        vel = self.velocityAtLength(len_arr) - self.v_rotation
+        vel = self.velocityAtLength(len_arr) - np.interp(len_arr, self.len_grid, self.v_air_offset)
         g_along = np.interp(len_arr, self.len_grid, self.g_grid)
 
         return k_arr*self.airDensityAtLength(len_arr)*vel**2 - g_along
@@ -1601,6 +1670,9 @@ if __name__ == "__main__":
         help='Heights of the fragmentations in km, e.g. those of the flares, where the ballistic ' \
         + 'coefficient can jump without penalty.')
 
+    # Add the options of an atmosphere profile
+    addProfileArguments(arg_parser)
+
     # Parse the command line arguments
     cml_args = arg_parser.parse_args()
 
@@ -1612,7 +1684,8 @@ if __name__ == "__main__":
     traj = loadPickle(dir_path, file_name)
 
     # Fit the drag model, and scan the spread of the fragmentations if any are given
-    fit_kwargs = dict(n_knots=cml_args.knots, drag_above=cml_args.dragabove)
+    fit_kwargs = dict(n_knots=cml_args.knots, drag_above=cml_args.dragabove, \
+        atm_profile=profileFromArguments(cml_args))
     if cml_args.fragheights is None:
         drag_fit = DragFit(traj, **fit_kwargs)
     else:

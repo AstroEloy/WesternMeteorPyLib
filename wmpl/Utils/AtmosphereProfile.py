@@ -258,3 +258,48 @@ class AtmosphereProfile(object):
         max_rel_err = np.max(np.abs(10**(atmDensPolyLog(height_arr, *dens_co) - dens_log) - 1))
 
         return dens_co, max_rel_err
+
+
+
+def addProfileArguments(arg_parser):
+    """ Add the command line options of an atmosphere profile, --atm_profile, --atm_profile_type and
+        --no_winds, to the given parser.
+
+    Arguments:
+        arg_parser: [ArgumentParser object] Parser to add the options to.
+    """
+
+    arg_parser.add_argument('--atm_profile', metavar='PATH', type=str, default=None, \
+        help='Atmosphere profile file to take the air density and the winds from, instead of the MSIS model '
+        'and air at rest. It is read and interpolated as OpenDarkflight does, so a dark flight run with the '
+        'same file continues in the same air. See --atm_profile_type for the formats.')
+
+    arg_parser.add_argument('--atm_profile_type', metavar='TYPE', type=str, default='wrf', \
+        choices=PROFILE_TYPES, \
+        help="Format of the --atm_profile file, as in OpenDarkflight: 'wrf' (default; the CSV every model "
+        "profile is written in), 'wyoming' (University of Wyoming radiosonde) or 'supracenter'.")
+
+    arg_parser.add_argument('--no_winds', action='store_true', \
+        help='Ignore the winds of the --atm_profile file.')
+
+
+
+def profileFromArguments(cml_args):
+    """ Load the atmosphere profile given on the command line (see addProfileArguments()).
+
+    Arguments:
+        cml_args: [Namespace object] Parsed command line arguments.
+
+    Return:
+        [AtmosphereProfile object] The profile, or None if none was given.
+    """
+
+    if cml_args.atm_profile is None:
+        return None
+
+    atm_profile = AtmosphereProfile(cml_args.atm_profile, profile_type=cml_args.atm_profile_type)
+    atm_profile.use_winds = not cml_args.no_winds
+
+
+    return atm_profile
+
