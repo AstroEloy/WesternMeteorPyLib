@@ -115,6 +115,9 @@ last 20% of the points and predicting them from the rest gives errors of 233 m a
 | `-g`, `--ga` | The product of the drag coefficient Gamma and the shape factor A, assumed for the dynamic mass. 0.78 by default. |
 | `-d`, `--dens` | The bulk density assumed for the dynamic mass (kg/m³). 3500 by default. |
 | `-f`, `--fragheights` | Heights of the fragmentations (km), e.g. those of the flares, where `K` can jump without penalty. The spread of the fragmentations is then scanned, and the uncertainty of `K` and of the dynamic mass in the table and the plot includes it. |
+| `--atm_profile` | Atmosphere profile file to take the air density and the winds from (experimental), read as OpenDarkflight does. Above and below the heights it covers, the MSIS model is scaled to join it. The wind along the direction of motion changes the speed relative to the air. |
+| `--atm_profile_type` | Format of the profile: `wrf` (default, the CSV of every model profile), `wyoming` or `supracenter`. |
+| `--no_winds` | Ignore the winds of the profile. |
 
 `python -m wmpl.Utils.SampleTrajectoryPositions traj.pickle beg end step [options]`
 
@@ -125,6 +128,38 @@ last 20% of the points and predicting them from the rest gives errors of 233 m a
 | `-f`, `--fragheights` | As above: the samples follow the fit with the jumps at the fragmentations. |
 | `-a`, `--dragabove` | As above. |
 | `-c`, `--csv` | Save the samples to the given CSV file. |
+| `--atm_profile`, `--atm_profile_type`, `--no_winds` | As above. |
+
+### Handing the fit over to OpenDarkflight (experimental)
+
+`python -m wmpl.Utils.DragFitDarkFlight traj.pickle out_dir -f HT [HT ...] --atm_profile profile.csv [options]`
+
+The dark flight starts at the last observed point, where the drag fit already flies on with a constant `K`.
+OpenDarkflight takes `K` directly (`ballistic_coeff`, its pull request #45) and gives the meteorite the mass of
+that `K` for its shape and density, and with the same profile in both, the dark flight starts in the same air.
+The summary compares the speeds of the two models 0.25 to 1 km below the hand-over, which have to agree.
+
+The uncertainty of `K` at the end is dominated by how spread the last fragmentation was. Every spread within
+`Delta chi2 <= 4` is equally likely, and every clone is one of those fits with its parameters drawn from their
+covariance, so `K` and the speed keep their correlation (a larger `K` comes with a lower speed) and the
+one-sided range the spread gives. On the synthetic sets of the knots, this mixture covered the true `K` in
+82-85% of the events within its central 68% and in 90-95% within its central 95%.
+
+| Flag | Description |
+| :--- | :--- |
+| `-f`, `--fragheights` | Heights of the fragmentations (km), required. |
+| `-n`, `--clones` | Number of clones. 200 by default. |
+| `--seed` | Seed of the draws. 0 by default. |
+| `-d`, `--dens`, `--shape`, `--drag_model` | Bulk density (3500 kg/m³ by default), shape and drag model of the meteorite for OpenDarkflight. |
+| `--end_ht` | Height where the dark flight ends (km). |
+| `--mc_runs` | Monte Carlo runs of OpenDarkflight for every clone, for the winds and anything set with `--odf_option`. |
+| `--odf_option` | Further OpenDarkflight option, e.g. `'Monte Carlo.wind_speed_sigma=0.15'`. Can be repeated. |
+| `--run` | Run OpenDarkflight (`--odf_python` of its environment, from `--odf_dir`, `--nproc` at a time) and collect the falls. |
+| `--collect` | Only collect the falls of runs already done. |
+
+The output directory gets `handover.json` (the nominal state, the clones and the scan), one input per clone
+under `clones/`, the nominal one under `nominal/`, and after the runs `falls.csv` and `falls.png`, with the falls
+along and across the direction of motion from the nominal fall.
 
 ---
 
