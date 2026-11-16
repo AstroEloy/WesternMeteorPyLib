@@ -18,16 +18,36 @@ them and narrow the strewn field. The spread only makes K grow below the flares,
 which a log-normal K could not give either.
 
 The direction of motion relative to the ground is derotated with the initial velocity, as in
-wmpl.Utils.SampleTrajectoryPositions, and the speed relative to the ground with the speed at the point. If the
-trajectory keeps the covariance of its line-of-sight fit, every clone also gets its own line, which moves its
-starting point and turns its direction together. Every clone can get a shape drawn from a list and a density
-drawn from a normal distribution, and its own OpenDarkflight Monte Carlo adds the winds (--mc_runs).
+wmpl.Utils.SampleTrajectoryPositions, and the speed relative to the ground with the speed at the point. Every
+clone also gets its own line, which moves its starting point across the line and turns its direction together:
+the line of one of the Monte Carlo trajectories of the solution if it was solved with the Monte Carlo (the
+<name>_mc_uncertainties.pickle in its 'Monte Carlo' directory), or else a line drawn from the covariance of
+its line-of-sight fit. Only the line is taken from the Monte Carlo, as the drag fit gives the motion along it.
+Every clone can get a shape drawn from a list and a density drawn from a normal distribution, and its own
+OpenDarkflight Monte Carlo adds the winds (--mc_runs).
 
 The fragments of the last fragmentation start at its height with the state of the fit there, and a K between
 that of the leading body just below the jump and --frag_k_max times it, log-uniform: smaller bodies of the
 same shape and density, down to 1/frag_k_max^3 of its mass. OpenDarkflight gives them the sideways kick of
 Passey and Melosh (1980) for that ratio of radii in its Monte Carlo runs. It does not ablate them, while they
 start at the speed of the fireball, so their K is the one at the breakup.
+
+On the command line, with the heights of the flares, the atmosphere profile and where OpenDarkflight is:
+
+    python -m wmpl.Utils.DragFitDarkFlight traj.pickle out_dir -f 35.0 30.0 --atm_profile profile.csv \
+        --drag_model dfn --shapes sphere brick --mc_runs 5 --fragments 100 --run \
+        --odf_python <environment of OpenDarkflight>/bin/python --odf_dir <OpenDarkflight directory>
+
+In Python, the same three steps:
+
+    mc_lines = loadMcLines(findMcUncertainties('traj.pickle'))
+    handover, ini_paths = prepareHandover(traj, out_dir, [35000.0, 30000.0], AtmosphereProfile('profile.csv'),
+        mc_lines=mc_lines, drag_model='dfn', mc_runs=5, n_fragments=100)
+    runOdf(ini_paths, odf_python, odf_dir)
+    print(summarizeFalls(out_dir, handover))
+
+prepareHandover() writes the inputs and handover.json without running anything, so OpenDarkflight can also be
+run by hand on them, and loadHandover() and summarizeFalls() collect the falls afterwards.
 
     Reference:
         Passey, Q. R., & Melosh, H. J. (1980). Effects of atmospheric breakup on crater field formation.
@@ -99,32 +119,33 @@ def stateAtLength(drag_fit, params, len_val):
 
 
 
-def lineMove(traj, eci_point, coords):
-    """ Compute how a point of the trajectory and the radiant move with the line at the given coordinates of
-        the frame of its line-of-sight fit (see Trajectory.lineFrame).
+def lineMove(traj, eci_point, line):
+    """ Compute how a point of the trajectory and the radiant move from the line of the solution to another
+        line.
 
     Arguments:
-        traj: [Trajectory object] Solved trajectory, with its los_frame.
+        traj: [Trajectory object] Solved trajectory.
         eci_point: [ndarray] ECI coordinates of the point (m).
-        coords: [ndarray] Rotation (2) and shift (2) of the line, as moves at the ends of the meteor (m).
+        line: [tuple] ECI coordinates of a point on the other line (m) and its radiant vector.
 
     Return:
         (move, turn):
-            - move: [ndarray] Move of the point at the same distance along the line (m).
+            - move: [ndarray] Move of the closest point on the line across it (m).
             - turn: [ndarray] Change of the unit radiant vector.
     """
 
-    middle, _, radiant, _ = traj.los_frame
-    line = lineFromFrame(coords, traj.los_frame)
+    point, radiant = np.array(traj.state_vect_mini), vectNorm(traj.radiant_eci_mini)
+    point_new, radiant_new = np.array(line[0]), vectNorm(line[1])
 
-    # Take the point at the same distance from the middle along both lines
-    dist = np.dot(eci_point - middle, radiant)
+    # Take the closest points of both lines to the given point
+    closest = point + np.dot(eci_point - point, radiant)*radiant
+    closest_new = point_new + np.dot(eci_point - point_new, radiant_new)*radiant_new
 
-    return line[:3] + dist*line[3:] - (middle + dist*radiant), line[3:] - radiant
+    return closest_new - closest, radiant_new - radiant
 
 
 
-def handoverState(drag_fit, len_val, k_val, vel, time, line_coords=None):
+def handoverState(drag_fit, len_val, k_val, vel, time, line=None):
     """ Compute the state of the meteorite at a length along the trajectory for a dark flight.
 
     Arguments:
@@ -135,8 +156,8 @@ def handoverState(drag_fit, len_val, k_val, vel, time, line_coords=None):
         time: [float] Time relative to the reference time of the trajectory (s).
 
     Keyword arguments:
-        line_coords: [ndarray] Coordinates of a line drawn around the fitted one (see lineMove()). None by
-            default, for the fitted line.
+        line: [tuple] Point (m) and radiant vector of a line drawn around the fitted one (see drawLine()).
+            None by default, for the fitted line.
 
     Return:
         [dict] Ballistic coefficient (m^2/kg), speed relative to the ground and inertial speed (m/s), time
@@ -152,8 +173,8 @@ def handoverState(drag_fit, len_val, k_val, vel, time, line_coords=None):
     ht = float(drag_fit.heightAtLength(len_arr)[0])
 
     # Move the point and turn the direction with the line drawn
-    if line_coords is not None:
-        move, turn = lineMove(traj, eci, line_coords)
+    if line is not None:
+        move, turn = lineMove(traj, eci, line)
         eci = eci + move
         radiant_eci = vectNorm(radiant_eci + turn)
         ht += np.dot(move, vectNorm(eci))
@@ -171,28 +192,86 @@ def handoverState(drag_fit, len_val, k_val, vel, time, line_coords=None):
 
 
 
-def drawLine(traj, rng):
-    """ Draw the coordinates of a line around the fitted one from the covariance of the line-of-sight fit.
+def findMcUncertainties(traj_pickle_path):
+    """ Find the uncertainties the trajectory solver saved with its Monte Carlo, in the 'Monte Carlo'
+        directory next to the trajectory pickle.
+
+    Arguments:
+        traj_pickle_path: [str] Path to the trajectory pickle, <name>_trajectory.pickle.
+
+    Return:
+        [str] Path to <name>_mc_uncertainties.pickle, None if there is none.
+    """
+
+    dir_path, file_name = os.path.split(os.path.abspath(traj_pickle_path))
+    name = file_name.replace('_trajectory.pickle', '')
+    mc_path = os.path.join(dir_path, 'Monte Carlo', name + '_mc_uncertainties.pickle')
+
+    return mc_path if os.path.isfile(mc_path) else None
+
+
+
+def loadMcLines(mc_path):
+    """ Load the lines of the Monte Carlo trajectories of a solution.
+
+    Arguments:
+        mc_path: [str] Path to the <name>_mc_uncertainties.pickle of the solution, e.g. from
+            findMcUncertainties(). None gives None.
+
+    Return:
+        [list] ECI coordinates of a point on every line (m) and its radiant vector, None if no path is given.
+    """
+
+    if mc_path is None:
+        return None
+
+    uncertainties = loadPickle(*os.path.split(mc_path))
+
+    lines = []
+    for mc_traj in (getattr(uncertainties, 'mc_traj_list', None) or []):
+
+        point = getattr(mc_traj, 'state_vect_mini', None)
+        radiant = getattr(mc_traj, 'radiant_eci_mini', None)
+        if (point is not None) and (radiant is not None) and np.all(np.isfinite(np.r_[point, radiant])):
+            lines.append((np.array(point), np.array(radiant)))
+
+
+    return lines
+
+
+
+def drawLine(traj, rng, mc_lines=None):
+    """ Draw a line around the fitted one: one of the given Monte Carlo lines, or else one from the
+        covariance of the line-of-sight fit.
 
     Arguments:
         traj: [Trajectory object] Solved trajectory.
         rng: [Generator object] Random number generator.
 
+    Keyword arguments:
+        mc_lines: [list] Lines of the Monte Carlo trajectories (see loadMcLines()). None by default.
+
     Return:
-        [ndarray] Coordinates of the line (see lineMove()), None if the trajectory has no covariance of its
-            line-of-sight fit.
+        [tuple] ECI coordinates of a point on the line (m) and its radiant vector, None if there are no Monte
+            Carlo lines and the trajectory has no covariance of its line-of-sight fit.
     """
+
+    if mc_lines:
+        return mc_lines[rng.integers(len(mc_lines))]
 
     covariance = getattr(traj, 'los_covariance', None)
     if (covariance is None) or (getattr(traj, 'los_frame', None) is None):
         return None
 
-    return rng.multivariate_normal(np.zeros(4), covariance, method='eigh')
+    line = lineFromFrame(rng.multivariate_normal(np.zeros(4), covariance, method='eigh'), traj.los_frame)
+
+
+    return line[:3], line[3:]
 
 
 
-def handoverClones(traj, knot_hts, n_clones=200, seed=0, geometry=True, n_fragments=0, frag_k_max=10.0, \
-    **kwargs):
+def handoverClones(traj, knot_hts, n_clones=200, seed=0, geometry=True, mc_lines=None, n_fragments=0, \
+    frag_k_max=10.0, **kwargs):
     """ Draw joint clones of the ballistic coefficient and the state at the last observed point, from the fits
         of every acceptable spread of the fragmentations, all equally likely, with their parameters drawn from
         their covariance, and the fragments of the last fragmentation.
@@ -204,8 +283,9 @@ def handoverClones(traj, knot_hts, n_clones=200, seed=0, geometry=True, n_fragme
     Keyword arguments:
         n_clones: [int] Number of clones. 200 by default.
         seed: [int] Seed of the random draws. 0 by default.
-        geometry: [bool] Draw a line for every clone and fragment from the covariance of the line-of-sight
-            fit, if the trajectory has it. True by default.
+        geometry: [bool] Draw a line for every clone and fragment (see drawLine()). True by default.
+        mc_lines: [list] Lines of the Monte Carlo trajectories of the solution (see loadMcLines()), drawn
+            instead of the covariance of the line-of-sight fit. None by default.
         n_fragments: [int] Number of fragments of the last fragmentation within the observed part. 0 by
             default.
         frag_k_max: [float] Largest K of a fragment over that of the leading body after the last
@@ -216,7 +296,8 @@ def handoverClones(traj, knot_hts, n_clones=200, seed=0, geometry=True, n_fragme
         (nominal, clones, fragments, scan):
             - nominal: [dict] State of the fit with the fragmentations as jumps (see handoverState()), with
                 the speeds relative to the ground of its drag-only flight below the last point (m/s) at the
-                heights CHECK_DEPTHS below it (m), and whether the lines were drawn.
+                heights CHECK_DEPTHS below it (m), and where the lines were drawn from ('monte_carlo',
+                'covariance' or 'none').
             - clones: [list] States of the clones, each with its spread (m) and number.
             - fragments: [list] States of the fragments, each with its number and its K over that of the
                 leading body.
@@ -224,7 +305,14 @@ def handoverClones(traj, knot_hts, n_clones=200, seed=0, geometry=True, n_fragme
     """
 
     rng = np.random.default_rng(seed)
-    geometry = geometry and (drawLine(traj, np.random.default_rng(0)) is not None)
+
+    # Find where the lines are drawn from
+    lines_from = 'none'
+    if geometry and mc_lines:
+        lines_from = 'monte_carlo'
+    elif geometry and (drawLine(traj, np.random.default_rng(0)) is not None):
+        lines_from = 'covariance'
+    geometry = lines_from != 'none'
 
     # Scan the spreads, and fit every acceptable one
     jump_fit, spreads, delta_chi2, log_k_last, _ = spreadScan(traj, knot_hts, **kwargs)
@@ -236,7 +324,7 @@ def handoverClones(traj, knot_hts, n_clones=200, seed=0, geometry=True, n_fragme
     nominal = handoverState(jump_fit, jump_fit.len_last, *stateAtLength(jump_fit, jump_fit.params, \
         jump_fit.len_last))
     check_hts = nominal['ht'] - np.array(CHECK_DEPTHS)
-    nominal.update(check_ht=check_hts.tolist(), geometry=geometry, \
+    nominal.update(check_ht=check_hts.tolist(), lines_from=lines_from, \
         check_vel=jump_fit.groundVelocityAtLength(jump_fit.lengthAtHeight(check_hts)).tolist())
 
     # Draw every clone from one acceptable spread and the covariance of its fit
@@ -245,10 +333,10 @@ def handoverClones(traj, knot_hts, n_clones=200, seed=0, geometry=True, n_fragme
 
         i = rng.integers(len(fits))
         params = rng.multivariate_normal(fits[i].params, fits[i].params_cov, method='eigh')
-        line_coords = drawLine(traj, rng) if geometry else None
+        line = drawLine(traj, rng, mc_lines=mc_lines) if geometry else None
 
         state = handoverState(fits[i], fits[i].len_last, *stateAtLength(fits[i], params, fits[i].len_last), \
-            line_coords=line_coords)
+            line=line)
         state.update(clone=clone_num, spread=float(spreads[acceptable[i]]))
         clones.append(state)
 
@@ -265,9 +353,9 @@ def handoverClones(traj, knot_hts, n_clones=200, seed=0, geometry=True, n_fragme
         for frag_num in range(1, n_fragments + 1):
 
             k_factor = frag_k_max**rng.uniform()
-            line_coords = drawLine(traj, rng) if geometry else None
+            line = drawLine(traj, rng, mc_lines=mc_lines) if geometry else None
 
-            state = handoverState(jump_fit, len_knot, k_after*k_factor, vel, time, line_coords=line_coords)
+            state = handoverState(jump_fit, len_knot, k_after*k_factor, vel, time, line=line)
             state.update(fragment=frag_num, k_factor=float(k_factor))
             fragments.append(state)
 
@@ -358,6 +446,167 @@ def writeOdfInput(file_path, state, ref_time, atm_profile, density, shape=None, 
 
     with open(file_path, 'w') as f:
         config.write(f)
+
+
+
+def prepareHandover(traj, out_dir, knot_hts, atm_profile, n_clones=200, seed=0, geometry=True, \
+    mc_lines=None, mc_source=None, n_fragments=0, frag_k_max=10.0, shapes=None, density=3500.0, \
+    density_sigma=0.0, drag_model=None, end_ht=None, mc_runs=0, odf_options=None):
+    """ Prepare the dark flight of a fireball: draw the clones and the fragments (see handoverClones()) and
+        their meteorites (see drawMeteorites()), write an OpenDarkflight input for the nominal state and for
+        every clone and fragment under out_dir, and save everything to handover.json. Run OpenDarkflight on
+        the inputs with runOdf() and collect the falls with summarizeFalls().
+
+    Arguments:
+        traj: [Trajectory object] Solved trajectory.
+        out_dir: [str] Output directory.
+        knot_hts: [list] Heights of the fragmentations (m), e.g. those of the flares.
+        atm_profile: [AtmosphereProfile object] Atmosphere profile of both the drag fit and the dark flight.
+
+    Keyword arguments:
+        n_clones: [int] Number of clones. 200 by default.
+        seed: [int] Seed of the random draws and of the Monte Carlo of OpenDarkflight. 0 by default.
+        geometry: [bool] Draw a line for every clone and fragment (see drawLine()). True by default.
+        mc_lines: [list] Lines of the Monte Carlo trajectories of the solution (see loadMcLines()). None by
+            default, for the covariance of the line-of-sight fit.
+        mc_source: [str] Path of the Monte Carlo uncertainties the lines come from, kept in handover.json.
+            None by default.
+        n_fragments: [int] Number of fragments of the last fragmentation. 0 by default.
+        frag_k_max: [float] Largest K of a fragment over that of the leading body. 10 by default.
+        shapes: [list] Shapes of the meteorite for OpenDarkflight, one drawn for every clone and fragment.
+            None by default, for its default.
+        density: [float] Bulk density of the meteorite (kg/m^3). 3500 by default.
+        density_sigma: [float] Standard deviation of the bulk density (kg/m^3). 0 by default.
+        drag_model: [str] Drag model of OpenDarkflight. None by default, for its default.
+        end_ht: [float] Height where the dark flight ends (km). None by default, for its default.
+        mc_runs: [int] Monte Carlo runs of OpenDarkflight for every clone and fragment. 0 by default.
+        odf_options: [list] Further options of the OpenDarkflight inputs as 'Section.option=value'. None by
+            default.
+
+    Return:
+        (handover, ini_paths):
+            - handover: [dict] The nominal state, the clones, the fragments, the scan of the spreads and the
+                settings, as saved to handover.json.
+            - ini_paths: [list] Paths of the OpenDarkflight inputs, the nominal one first.
+    """
+
+    odf_options = list(odf_options or [])
+
+    # Draw the clones and the fragments, and their meteorites
+    nominal, clones, fragments, scan = handoverClones(traj, knot_hts, n_clones=n_clones, seed=seed, \
+        geometry=geometry, mc_lines=mc_lines, n_fragments=n_fragments, frag_k_max=frag_k_max, \
+        atm_profile=atm_profile)
+    drawMeteorites([nominal], shapes[:1] if shapes else None, density)
+    drawMeteorites(clones + fragments, shapes, density, density_sigma=density_sigma, seed=seed)
+
+    ref_time = jd2Date(traj.jdt_ref, dt_obj=True).strftime('%Y-%m-%d %H:%M:%S.%f')
+
+    # Write the input of the nominal state, without a Monte Carlo
+    os.makedirs(os.path.join(out_dir, 'nominal'), exist_ok=True)
+    ini_paths = [os.path.join(out_dir, 'nominal', 'nominal_df_params.ini')]
+    writeOdfInput(ini_paths[0], nominal, ref_time, atm_profile, nominal['density'], shape=nominal['shape'], \
+        drag_model=drag_model, end_ht=end_ht, odf_options=odf_options)
+
+    # Write the inputs of the clones and the fragments, which get the sideways kick of their breakup
+    for kind, states in (('clone', clones), ('fragment', fragments)):
+        for state in states:
+
+            run_dir = os.path.join(out_dir, kind + 's', '{:s}_{:04d}'.format(kind, state[kind]))
+            os.makedirs(run_dir, exist_ok=True)
+            ini_paths.append(os.path.join(run_dir, '{:s}_{:04d}_df_params.ini'.format(kind, state[kind])))
+
+            run_options = list(odf_options)
+            if kind == 'fragment':
+                run_options += ['Deviating Fragments.v_perp_model=passey_melosh', \
+                    'Deviating Fragments.pm_radius_ratio={:.5f}'.format(state['k_factor'])]
+
+            writeOdfInput(ini_paths[-1], state, ref_time, atm_profile, state['density'], \
+                shape=state['shape'], drag_model=drag_model, end_ht=end_ht, mc_runs=mc_runs, \
+                seed=seed + 10000*(kind == 'fragment') + state[kind], odf_options=run_options)
+
+    # Save the hand-over and its settings
+    handover = dict(nominal=nominal, clones=clones, fragments=fragments, scan=scan, \
+        atm_profile=os.path.abspath(atm_profile.path), atm_profile_sha256=atm_profile.sha256, \
+        atm_profile_winds=atm_profile.use_winds, mc_uncertainties=mc_source, \
+        n_mc_lines=len(mc_lines or []), settings=dict(knot_hts=list(map(float, knot_hts)), \
+        n_clones=n_clones, seed=seed, n_fragments=n_fragments, frag_k_max=frag_k_max, shapes=shapes, \
+        density=density, density_sigma=density_sigma, drag_model=drag_model, end_ht=end_ht, mc_runs=mc_runs, \
+        odf_options=odf_options))
+
+    with open(os.path.join(out_dir, 'handover.json'), 'w') as f:
+        json.dump(handover, f, indent=1)
+
+
+    return handover, ini_paths
+
+
+
+def loadHandover(out_dir):
+    """ Load a hand-over saved by prepareHandover().
+
+    Arguments:
+        out_dir: [str] Output directory of the hand-over.
+
+    Return:
+        [dict] The hand-over (see prepareHandover()).
+    """
+
+    with open(os.path.join(out_dir, 'handover.json')) as f:
+        return json.load(f)
+
+
+
+def handoverReport(handover):
+    """ Describe a hand-over prepared by prepareHandover(): the starting point, the nominal state, the
+        acceptable spreads, the range of the clones, where the lines come from and the fragments.
+
+    Arguments:
+        handover: [dict] The hand-over (see prepareHandover()).
+
+    Return:
+        [str] The report.
+    """
+
+    nominal, clones, fragments, scan = [handover[key] for key in ('nominal', 'clones', 'fragments', 'scan')]
+    k_clones = np.array([state['k'] for state in clones])
+    vel_clones = np.array([state['vel'] for state in clones])
+
+    out = []
+    out.append("Hand-over at the last point: {:.3f} km, {:.6f}, {:.6f}, radiant azim {:.3f}, elev {:.3f} " \
+        "deg".format(nominal['ht']/1000, nominal['lat'], nominal['lon'], nominal['azim'], nominal['elev']))
+    out.append("Nominal (jumps): K = {:.3e} m^2/kg, speed relative to the ground {:.1f} m/s".format( \
+        nominal['k'], nominal['vel']))
+    acceptable = [spread for spread, d_chi2 in zip(scan['spreads'], scan['delta_chi2']) \
+        if d_chi2 <= DELTA_CHI2_MAX]
+    out.append("Acceptable spreads: {:s} km".format(", ".join("{:.2f}".format(s/1000) for s in acceptable)))
+    if clones:
+        out.append("Clones: K {:.3e} to {:.3e} m^2/kg (median {:.3e}), speed {:.0f} to {:.0f} m/s, "
+            "correlation of ln K and the speed {:+.2f}".format(np.min(k_clones), np.max(k_clones), \
+            np.median(k_clones), np.min(vel_clones), np.max(vel_clones), \
+            np.corrcoef(np.log(k_clones), vel_clones)[0, 1]))
+
+    # Say where the lines come from
+    if nominal['lines_from'] == 'monte_carlo':
+        out.append("Lines drawn from the {:d} Monte Carlo trajectories of {:s}".format( \
+            handover['n_mc_lines'], str(handover['mc_uncertainties'])))
+    elif nominal['lines_from'] == 'covariance':
+        out.append("Lines drawn from the covariance of the line-of-sight fit (no Monte Carlo uncertainties)")
+    else:
+        out.append("The lines are not drawn: no Monte Carlo uncertainties nor covariance of the "
+            "line-of-sight fit, or the geometry was switched off")
+
+    # Describe the fragments
+    if fragments:
+        out.append("Fragments: {:d} from {:.3f} km, K {:.3e} to {:.3e} m^2/kg".format(len(fragments), \
+            fragments[0]['ht']/1000, min(state['k'] for state in fragments), \
+            max(state['k'] for state in fragments)))
+        if handover['settings']['mc_runs'] == 0:
+            out.append("Without Monte Carlo runs of OpenDarkflight the fragments get no sideways kick")
+    elif handover['settings']['n_fragments']:
+        out.append("No fragments: no fragmentation within the observed part")
+
+
+    return "\n".join(out)
 
 
 
@@ -505,21 +754,20 @@ def collectFalls(out_dir, kind, states, lat_ref, lon_ref, azim_motion):
 
 
 
-def summarizeFalls(out_dir, nominal, clones, fragments=None):
-    """ Collect the falls of the runs, save them to falls.csv and plot them to falls.png, and return a
-        summary.
+def summarizeFalls(out_dir, handover):
+    """ Collect the falls of the OpenDarkflight runs of a hand-over, save them to falls.csv and plot them to
+        falls.png, and return a summary, with the speeds of the drag fit and of OpenDarkflight below the
+        hand-over, which have to agree.
 
     Arguments:
-        out_dir: [str] Output directory of the hand-over (see the command line).
-        nominal: [dict] Nominal state (see handoverClones()).
-        clones: [list] States of the clones.
-
-    Keyword arguments:
-        fragments: [list] States of the fragments. None by default.
+        out_dir: [str] Output directory of the hand-over.
+        handover: [dict] The hand-over (see prepareHandover() and loadHandover()).
 
     Return:
         [str] Summary of the falls.
     """
+
+    nominal, clones, fragments = handover['nominal'], handover['clones'], handover['fragments']
 
     nominal_run = readOdfRun(os.path.join(out_dir, 'nominal'))
     if nominal_run is None:
@@ -527,7 +775,7 @@ def summarizeFalls(out_dir, nominal, clones, fragments=None):
 
     ref = (nominal_run['lat'], nominal_run['lon'], (nominal['azim'] + 180.0)%360.0)
     falls = collectFalls(out_dir, 'clone', clones, *ref)
-    frag_falls = collectFalls(out_dir, 'fragment', fragments or [], *ref)
+    frag_falls = collectFalls(out_dir, 'fragment', fragments, *ref)
     if not falls:
         return "No OpenDarkflight output of the clones in {:s}".format(out_dir)
 
@@ -582,6 +830,8 @@ def summarizeFalls(out_dir, nominal, clones, fragments=None):
         out.append("    along the motion (km): " + pct_text(column(frag_falls, 'along_km'), "{:+.2f}"))
         out.append("    across the motion (km): " + pct_text(column(frag_falls, 'cross_km'), "{:+.2f}"))
         out.append("    mass for K (kg): " + pct_text(column(frag_falls, 'mass_kg'), "{:.3g}"))
+        out.append("    The sideways kicks of the fragments follow Passey & Melosh (1980), Icarus 42, "
+            "211-233. Please cite it.")
 
 
     return "\n".join(out)
@@ -612,7 +862,13 @@ if __name__ == "__main__":
     arg_parser.add_argument('--seed', type=int, default=0, help='Seed of the random draws. 0 by default.')
 
     arg_parser.add_argument('--no_geometry', action='store_true', \
-        help='Do not draw the line of every clone from the covariance of the line-of-sight fit.')
+        help='Do not draw a line for every clone and fragment.')
+
+    arg_parser.add_argument('--mc_uncertainties', metavar='PATH', type=str, default=None, \
+        help="Monte Carlo uncertainties of the trajectory solution, whose lines are drawn for the clones and "
+        "the fragments. By default the <name>_mc_uncertainties.pickle in the 'Monte Carlo' directory next to "
+        "the trajectory pickle, if there is one; without it, the lines are drawn from the covariance of the "
+        "line-of-sight fit.")
 
     arg_parser.add_argument('-d', '--dens', metavar='DENS', type=float, default=3500.0, \
         help='Bulk density of the meteorite in kg/m^3 for OpenDarkflight. 3500 by default.')
@@ -672,79 +928,29 @@ if __name__ == "__main__":
         raise SystemExit("--atm_profile is needed: the dark flight takes its winds and air from the same " \
             "file")
 
-    state_file = os.path.join(cml_args.out_dir, 'handover.json')
-
+    # Only collect the falls of a hand-over already run
     if cml_args.collect:
 
-        with open(state_file) as f:
-            saved = json.load(f)
-
-        print(summarizeFalls(cml_args.out_dir, saved['nominal'], saved['clones'], saved.get('fragments')))
+        handover = loadHandover(cml_args.out_dir)
+        print(summarizeFalls(cml_args.out_dir, handover))
         raise SystemExit()
 
 
-    # Load the trajectory, draw the clones and the fragments, and their meteorites
+    # Load the trajectory, and the lines of its Monte Carlo trajectories if there are any
     traj = loadPickle(*os.path.split(cml_args.traj_pickle_file))
-    nominal, clones, fragments, scan = handoverClones(traj, 1000*np.array(cml_args.fragheights), \
-        n_clones=cml_args.clones, seed=cml_args.seed, geometry=not cml_args.no_geometry, \
-        n_fragments=cml_args.fragments, frag_k_max=cml_args.frag_k_max, atm_profile=atm_profile)
-    drawMeteorites([nominal], cml_args.shapes[:1] if cml_args.shapes else None, cml_args.dens)
-    drawMeteorites(clones + fragments, cml_args.shapes, cml_args.dens, density_sigma=cml_args.dens_sigma, \
-        seed=cml_args.seed)
+    mc_path = cml_args.mc_uncertainties or findMcUncertainties(cml_args.traj_pickle_file)
+    mc_lines = None if cml_args.no_geometry else loadMcLines(mc_path)
 
-    ref_time = jd2Date(traj.jdt_ref, dt_obj=True).strftime('%Y-%m-%d %H:%M:%S.%f')
-    odf_kwargs = dict(drag_model=cml_args.drag_model, end_ht=cml_args.end_ht)
+    # Prepare the hand-over and the inputs of OpenDarkflight
+    handover, ini_paths = prepareHandover(traj, cml_args.out_dir, 1000*np.array(cml_args.fragheights), \
+        atm_profile, n_clones=cml_args.clones, seed=cml_args.seed, geometry=not cml_args.no_geometry, \
+        mc_lines=mc_lines, mc_source=mc_path, n_fragments=cml_args.fragments, \
+        frag_k_max=cml_args.frag_k_max, \
+        shapes=cml_args.shapes, density=cml_args.dens, density_sigma=cml_args.dens_sigma, \
+        drag_model=cml_args.drag_model, end_ht=cml_args.end_ht, mc_runs=cml_args.mc_runs, \
+        odf_options=cml_args.odf_option)
 
-    # Write the input of the nominal state
-    os.makedirs(os.path.join(cml_args.out_dir, 'nominal'), exist_ok=True)
-    ini_paths = [os.path.join(cml_args.out_dir, 'nominal', 'nominal_df_params.ini')]
-    writeOdfInput(ini_paths[0], nominal, ref_time, atm_profile, nominal['density'], shape=nominal['shape'], \
-        odf_options=cml_args.odf_option, **odf_kwargs)
-
-    # Write the inputs of the clones and the fragments, which get the sideways kick of their breakup
-    for kind, states in (('clone', clones), ('fragment', fragments)):
-        for state in states:
-
-            run_dir = os.path.join(cml_args.out_dir, kind + 's', '{:s}_{:04d}'.format(kind, state[kind]))
-            os.makedirs(run_dir, exist_ok=True)
-            ini_paths.append(os.path.join(run_dir, '{:s}_{:04d}_df_params.ini'.format(kind, state[kind])))
-
-            odf_options = list(cml_args.odf_option)
-            if kind == 'fragment':
-                odf_options += ['Deviating Fragments.v_perp_model=passey_melosh', \
-                    'Deviating Fragments.pm_radius_ratio={:.5f}'.format(state['k_factor'])]
-
-            writeOdfInput(ini_paths[-1], state, ref_time, atm_profile, state['density'], \
-                shape=state['shape'], mc_runs=cml_args.mc_runs, \
-                seed=cml_args.seed + 10000*(kind == 'fragment') + state[kind], odf_options=odf_options, \
-                **odf_kwargs)
-
-    with open(state_file, 'w') as f:
-        json.dump(dict(nominal=nominal, clones=clones, fragments=fragments, scan=scan, \
-            atm_profile=atm_profile.path, atm_profile_sha256=atm_profile.sha256), f, indent=1)
-
-    # Report the hand-over
-    k_clones = np.array([state['k'] for state in clones])
-    vel_clones = np.array([state['vel'] for state in clones])
-    print("Hand-over at the last point: {:.3f} km, {:.6f}, {:.6f}, radiant azim {:.3f}, elev {:.3f} " \
-        "deg".format(nominal['ht']/1000, nominal['lat'], nominal['lon'], nominal['azim'], nominal['elev']))
-    print("Nominal (jumps): K = {:.3e} m^2/kg, speed relative to the ground {:.1f} m/s".format(nominal['k'], \
-        nominal['vel']))
-    print("Acceptable spreads: {:s} km".format(", ".join("{:.2f}".format(s/1000) for s, d in \
-        zip(scan['spreads'], scan['delta_chi2']) if d <= DELTA_CHI2_MAX)))
-    print("Clones: K {:.3e} to {:.3e} m^2/kg (median {:.3e}), speed {:.0f} to {:.0f} m/s, correlation of "
-        "ln K and the speed {:+.2f}".format(np.min(k_clones), np.max(k_clones), np.median(k_clones), \
-        np.min(vel_clones), np.max(vel_clones), np.corrcoef(np.log(k_clones), vel_clones)[0, 1]))
-    if not nominal['geometry']:
-        print("The lines of the clones are not drawn: the trajectory has no covariance of its line-of-sight "
-            "fit, or --no_geometry was given")
-    if fragments:
-        print("Fragments: {:d} from {:.3f} km, K {:.3e} to {:.3e} m^2/kg".format(len(fragments), \
-            fragments[0]['ht']/1000, min(s['k'] for s in fragments), max(s['k'] for s in fragments)))
-        if cml_args.mc_runs == 0:
-            print("Without --mc_runs the fragments get no sideways kick")
-    elif cml_args.fragments:
-        print("No fragments: no fragmentation within the observed part")
+    print(handoverReport(handover))
     print("OpenDarkflight inputs written to {:s}".format(cml_args.out_dir))
 
     # Run OpenDarkflight and summarize the falls
@@ -755,4 +961,4 @@ if __name__ == "__main__":
             print("{:d} OpenDarkflight runs failed, see their run.log, e.g. {:s}".format(len(failed), \
                 failed[0]))
 
-        print(summarizeFalls(cml_args.out_dir, nominal, clones, fragments))
+        print(summarizeFalls(cml_args.out_dir, handover))

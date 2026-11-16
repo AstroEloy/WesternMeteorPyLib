@@ -12,14 +12,22 @@ from __future__ import print_function, division, absolute_import
 
 import configparser
 import contextlib
+import csv
 import functools
+import glob
 import io
+import os
+from types import SimpleNamespace
 
 import numpy as np
 
+from wmpl.Trajectory.Trajectory import lineFromFrame
 from wmpl.Utils.AtmosphereProfile import AtmosphereProfile
-from wmpl.Utils.DragFitDarkFlight import DENSITY_MIN, alongCross, drawMeteorites, handoverClones, lineMove, \
-    readOdfRun, writeOdfInput
+from wmpl.Utils.DragFitDarkFlight import DENSITY_MIN, alongCross, drawLine, drawMeteorites, \
+    findMcUncertainties, handoverClones, handoverReport, handoverState, lineMove, loadHandover, loadMcLines, \
+    prepareHandover, readOdfRun, stateAtLength, summarizeFalls, writeOdfInput
+from wmpl.Utils.Pickling import savePickle
+from wmpl.Utils.Tests.test_DragFitAtmosphereProfile import loadProfile
 from wmpl.Utils.SampleTrajectoryPositions import sampleTrajectory
 from wmpl.Utils.Tests.test_DragFitFragmentations import HT_FRAG, fitDrag, fragmentedTrajectory, \
     lastBallisticCoeff
@@ -171,11 +179,13 @@ def testALineMovesThePointAndTurnsTheDirection():
     middle, half_length, radiant, axes = traj.los_frame
     point = middle - 0.8*half_length*radiant
 
-    move, turn = lineMove(traj, point, np.array([10.0, 0.0, 0.0, 0.0]))
+    line = lineFromFrame(np.array([10.0, 0.0, 0.0, 0.0]), traj.los_frame)
+    move, turn = lineMove(traj, point, (line[:3], line[3:]))
     assert np.allclose(move, -0.8*10.0*axes[0], atol=1e-2)
     assert np.allclose(turn, 10.0/half_length*axes[0], atol=1e-6)
 
-    move, turn = lineMove(traj, point, np.array([0.0, 0.0, 0.0, 5.0]))
+    line = lineFromFrame(np.array([0.0, 0.0, 0.0, 5.0]), traj.los_frame)
+    move, turn = lineMove(traj, point, (line[:3], line[3:]))
     assert np.allclose(move, 5.0*axes[1], atol=1e-9)
     assert np.allclose(turn, 0.0, atol=1e-12)
 
@@ -244,4 +254,128 @@ def testTheMeteoritesAreDrawn():
 
     drawMeteorites(states, None, 3000.0)
     assert all((state['shape'] is None) and (state['density'] == 3000.0) for state in states)
+
+
+
+def testTheMonteCarloLinesAreFoundAndDrawn(tmp_path):
+    """ The uncertainties the solver saves with its Monte Carlo are found next to the trajectory pickle, their
+        lines are loaded and drawn, and a line shifted across moves the starting point by the shift without
+        turning the direction, other than the local north turns over the shift.
+    """
+
+    traj, _ = fragmentedTrajectory(SPREAD)
+    radiant = traj.radiant_eci_mini/np.linalg.norm(traj.radiant_eci_mini)
+    across = np.cross(radiant, [0.0, 0.0, 1.0])
+    across /= np.linalg.norm(across)
+    shifted = (np.array(traj.state_vect_mini) + 7.0*across, np.array(traj.radiant_eci_mini))
+
+    # Save the uncertainties as the solver does, with one trajectory without a line
+    mc_traj_list = [SimpleNamespace(state_vect_mini=shifted[0], radiant_eci_mini=shifted[1]), \
+        SimpleNamespace(state_vect_mini=None, radiant_eci_mini=None)]
+    savePickle(SimpleNamespace(mc_traj_list=mc_traj_list), str(tmp_path/'Monte Carlo'), \
+        'event_mc_uncertainties.pickle')
+    traj_path = str(tmp_path/'event_trajectory.pickle')
+
+    mc_path = findMcUncertainties(traj_path)
+    mc_lines = loadMcLines(mc_path)
+
+    assert mc_path == os.path.join(str(tmp_path), 'Monte Carlo', 'event_mc_uncertainties.pickle')
+    assert findMcUncertainties(str(tmp_path/'other_trajectory.pickle')) is None
+    assert len(mc_lines) == 1
+    assert np.array_equal(drawLine(traj, np.random.default_rng(0), mc_lines=mc_lines)[0], shifted[0])
+
+    # The starting point moves by the shift and the direction stays
+    jump_fit = fitDrag(traj, knot_hts=[HT_FRAG])
+    args = (jump_fit, jump_fit.len_last) + stateAtLength(jump_fit, jump_fit.params, jump_fit.len_last)
+    fixed, moved = handoverState(*args), handoverState(*args, line=mc_lines[0])
+
+    north = np.radians(moved['lat'] - fixed['lat'])*6371e3
+    east = np.radians(moved['lon'] - fixed['lon'])*6371e3*np.cos(np.radians(fixed['lat']))
+    assert abs(np.sqrt(north**2 + east**2 + (moved['ht'] - fixed['ht'])**2) - 7.0) < 0.1
+    # The direction stays, up to the turn of the local north over the shift
+    assert abs(moved['azim'] - fixed['azim']) < 1e-3
+    assert abs(moved['elev'] - fixed['elev']) < 1e-3
+
+
+
+def writeFakeOdfRun(run_dir, lat, lon, ht_arr=None, vel_arr=None, mc_falls=()):
+    """ Write the outputs of an OpenDarkflight run of a 1.5 kg meteorite which falls at the given point, with
+        the given heights (m) and speeds (m/s) before, and the given Monte Carlo falls (lat, lon).
+    """
+
+    ht_arr = [15000.0, 200.0] if ht_arr is None else ht_arr
+    vel_arr = [4000.0, 100.0] if vel_arr is None else vel_arr
+
+    with open(os.path.join(run_dir, 'nominal_1.5_kg.txt'), 'w') as f:
+        f.write("# header\n")
+        for i, (ht, vel) in enumerate(zip(ht_arr, vel_arr)):
+            f.write("{:.3f} | {:.6f} | {:.6f} | {:.4f} | {:.2f}\n".format(float(i), lat, lon, ht/1000, vel))
+
+    with open(os.path.join(run_dir, 'mc_1.5_kg.txt'), 'w') as f:
+        f.write("# header\n")
+        for lat_mc, lon_mc in mc_falls:
+            f.write("90.0 | {:.6f} | {:.6f} | 0.2 | 100.0\n".format(lat_mc, lon_mc))
+
+
+
+def testTheHandoverIsPreparedAndItsFallsCollected(tmp_path):
+    """ prepareHandover() writes an input for the nominal state and every clone and fragment and saves the
+        hand-over, which loadHandover() reads back and handoverReport() describes. With the outputs of
+        OpenDarkflight in place, summarizeFalls() collects every fall to falls.csv and compares the speeds
+        below the hand-over.
+    """
+
+    traj, _ = fragmentedTrajectory(SPREAD)
+    profile = loadProfile(tmp_path/'profile.csv')
+    out_dir = str(tmp_path/'handover')
+
+    with contextlib.redirect_stdout(io.StringIO()):
+        handover, ini_paths = prepareHandover(traj, out_dir, [HT_FRAG], profile, n_clones=6, seed=2, \
+            n_fragments=3, shapes=['sphere', 'brick'], density_sigma=100.0, mc_runs=2, drag_model='dfn')
+
+    # The inputs: the nominal one without a Monte Carlo, the fragments with their kicks
+    assert len(ini_paths) == 1 + 6 + 3
+    assert ini_paths[0].endswith(os.path.join('nominal', 'nominal_df_params.ini'))
+    configs = []
+    for ini_path in ini_paths:
+        config = configparser.ConfigParser()
+        config.read(ini_path)
+        configs.append(config)
+
+    assert configs[0]['Monte Carlo']['mc_enable'] == 'False'
+    assert all(config['Monte Carlo']['mc_enable'] == 'True' for config in configs[1:])
+    assert len(set(config['Monte Carlo']['random_seed'] for config in configs[1:])) == 9
+    assert all(config['Meteorite']['drag_model'] == 'dfn' for config in configs)
+    for config, state in zip(configs[7:], handover['fragments']):
+        assert config['Deviating Fragments']['v_perp_model'] == 'passey_melosh'
+        assert abs(float(config['Deviating Fragments']['pm_radius_ratio']) - state['k_factor']) < 1e-4
+
+    # The hand-over saved and described
+    saved = loadHandover(out_dir)
+    assert saved['clones'] == handover['clones']
+    assert saved['settings']['n_fragments'] == 3
+    report = handoverReport(handover)
+    assert "Hand-over at the last point" in report
+    assert "Fragments: 3 from" in report
+
+    # Put the outputs of OpenDarkflight in place, the nominal one with the speeds of the drag fit below
+    nominal = handover['nominal']
+    ht_track = [nominal['ht']] + nominal['check_ht'] + [200.0]
+    vel_track = [nominal['vel']] + nominal['check_vel'] + [100.0]
+    writeFakeOdfRun(os.path.dirname(ini_paths[0]), 0.0, 0.0, ht_arr=ht_track, vel_arr=vel_track)
+    for ini_path in ini_paths[1:]:
+        writeFakeOdfRun(os.path.dirname(ini_path), 0.001, 0.0, mc_falls=[(0.002, 0.0), (0.003, 0.0)])
+
+    summary = summarizeFalls(out_dir, handover)
+
+    with open(os.path.join(out_dir, 'falls.csv')) as f:
+        falls = list(csv.DictReader(f))
+
+    assert len(falls) == (6 + 3)*3
+    assert sum(row['kind'] == 'fragment' for row in falls) == 3*3
+    assert os.path.isfile(os.path.join(out_dir, 'falls.png'))
+    for v_fit in nominal['check_vel']:
+        assert "{:.0f}/{:.0f} m/s".format(v_fit, v_fit) in summary
+    assert "Fragments of the last fragmentation: 9 falls of 3 fragments" in summary
+    assert len(glob.glob(os.path.join(out_dir, 'clones', 'clone_*'))) == 6
 
