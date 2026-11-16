@@ -1,7 +1,8 @@
 """ Tests of the hand-over of a drag fit to OpenDarkflight in wmpl.Utils.DragFitDarkFlight: the joint clones
-    of K and the state at the last observed point, the OpenDarkflight inputs and the reading of its outputs.
-    The trajectory is the synthetic fireball of test_DragFitFragmentations.py, with a fragmentation spread
-    over 1.5 km.
+    of K and the state at the last observed point, the lines drawn around the fitted one, the fragments of the
+    last fragmentation, the meteorites, the OpenDarkflight inputs and the reading of its outputs. The
+    trajectory is the synthetic fireball of test_DragFitFragmentations.py, with a fragmentation spread over
+    1.5 km.
 
 Run with pytest:
     python -m pytest wmpl/Utils/Tests/test_DragFitDarkFlight.py -v
@@ -17,25 +18,31 @@ import io
 import numpy as np
 
 from wmpl.Utils.AtmosphereProfile import AtmosphereProfile
-from wmpl.Utils.DragFitDarkFlight import alongCross, handoverClones, readOdfRun, writeOdfInput
+from wmpl.Utils.DragFitDarkFlight import DENSITY_MIN, alongCross, drawMeteorites, handoverClones, lineMove, \
+    readOdfRun, writeOdfInput
 from wmpl.Utils.SampleTrajectoryPositions import sampleTrajectory
 from wmpl.Utils.Tests.test_DragFitFragmentations import HT_FRAG, fitDrag, fragmentedTrajectory, \
     lastBallisticCoeff
 
 
-# Spread of the fragmentation (m) and number of clones
+# Spread of the fragmentation (m), number of clones and of fragments, and largest K factor of a fragment
 SPREAD = 1500.0
 N_CLONES = 100
+N_FRAGMENTS = 20
+FRAG_K_MAX = 10.0
 
 
 
 @functools.lru_cache(maxsize=None)
-def clonedHandover():
-    """ The hand-over of the fireball with the spread fragmentation (computed once). """
+def clonedHandover(geometry=True):
+    """ The hand-over of the fireball with the spread fragmentation, with or without the lines drawn
+        (computed once for each).
+    """
 
     traj, _ = fragmentedTrajectory(SPREAD)
     with contextlib.redirect_stdout(io.StringIO()):
-        return handoverClones(traj, [HT_FRAG], n_clones=N_CLONES, seed=1)
+        return handoverClones(traj, [HT_FRAG], n_clones=N_CLONES, seed=1, geometry=geometry, \
+            n_fragments=N_FRAGMENTS, frag_k_max=FRAG_K_MAX)
 
 
 
@@ -45,7 +52,7 @@ def testTheClonesComeFromTheAcceptableSpreads():
     """
 
     traj, _ = fragmentedTrajectory(SPREAD)
-    nominal, clones, scan = clonedHandover()
+    nominal, clones, _, scan = clonedHandover()
 
     spreads = np.array(scan['spreads'])
     acceptable = spreads[np.array(scan['delta_chi2']) <= 4.0]
@@ -66,7 +73,7 @@ def testTheNominalStateIsThatOfTheSamples():
     """
 
     traj, _ = fragmentedTrajectory(SPREAD)
-    nominal, _, _ = clonedHandover()
+    nominal, _, _, _ = clonedHandover()
 
     with contextlib.redirect_stdout(io.StringIO()):
         samples = sampleTrajectory(traj, nominal['time'], nominal['time'], 1.0, by_time=True, \
@@ -86,7 +93,7 @@ def testTheInputCarriesTheState(tmp_path):
         further options added.
     """
 
-    nominal, _, _ = clonedHandover()
+    nominal, _, _, _ = clonedHandover()
 
     profile_path = tmp_path/'profile.csv'
     with open(str(profile_path), 'w') as f:
@@ -152,3 +159,89 @@ def testAlongAndAcrossTheMotion():
 
     assert np.allclose(along, [1.112, 0.0], atol=1e-3)
     assert np.allclose(cross, [0.0, 1.112], atol=1e-3)
+
+
+
+def testALineMovesThePointAndTurnsTheDirection():
+    """ A rotation of the line moves a point by its distance from the middle over the half length and turns
+        the radiant by as much, and a shift moves every point by the shift without turning the radiant.
+    """
+
+    traj, _ = fragmentedTrajectory(SPREAD)
+    middle, half_length, radiant, axes = traj.los_frame
+    point = middle - 0.8*half_length*radiant
+
+    move, turn = lineMove(traj, point, np.array([10.0, 0.0, 0.0, 0.0]))
+    assert np.allclose(move, -0.8*10.0*axes[0], atol=1e-2)
+    assert np.allclose(turn, 10.0/half_length*axes[0], atol=1e-6)
+
+    move, turn = lineMove(traj, point, np.array([0.0, 0.0, 0.0, 5.0]))
+    assert np.allclose(move, 5.0*axes[1], atol=1e-9)
+    assert np.allclose(turn, 0.0, atol=1e-12)
+
+
+
+def testTheLinesOfTheClonesAreDrawn():
+    """ The lines drawn from the covariance of the line-of-sight fit move the starting points of the clones
+        by about its size at the end of the meteor. Without them the points of the clones of one spread only
+        move with the rotation of the Earth between their times, by much less.
+    """
+
+    traj, _ = fragmentedTrajectory(SPREAD)
+    _, clones, _, _ = clonedHandover()
+    _, clones_fixed, _, _ = clonedHandover(geometry=False)
+
+    def _moves(states):
+        lat = np.radians(np.array([state['lat'] for state in states]))
+        lon = np.radians(np.array([state['lon'] for state in states]))
+        north = (lat - lat[0])*6371e3
+        east = (lon - lon[0])*6371e3*np.cos(lat[0])
+        return np.hypot(north, east)
+
+    # The clones of one spread share the point of the fitted line, up to the moves of their lines
+    same_spread = [state for state in clones if state['spread'] == clones[0]['spread']]
+    same_spread_fixed = [state for state in clones_fixed if state['spread'] == clones_fixed[0]['spread']]
+    size = np.sqrt(np.trace(traj.los_covariance))
+
+    assert 0.2*size < np.median(_moves(same_spread)[1:]) < 5*size
+    assert np.median(_moves(same_spread_fixed)[1:]) < 0.1*size
+
+
+
+def testTheFragmentsStartAtTheLastFragmentation():
+    """ The fragments start at the height of the last fragmentation with the speed of the fit with jumps
+        there, and a K between that of the leading body after the jump and FRAG_K_MAX times it.
+    """
+
+    traj, _ = fragmentedTrajectory(SPREAD)
+    _, _, fragments, _ = clonedHandover(geometry=False)
+    jump_fit = fitDrag(traj, knot_hts=[HT_FRAG])
+
+    len_knot = jump_fit.ramp_beg[jump_fit.pen_weight == 0][0]
+    k_after = jump_fit.ballisticCoeffAtLength(np.array([len_knot + 2.0]))[0][0]
+    k_factors = np.array([state['k']/k_after for state in fragments])
+
+    assert len(fragments) == N_FRAGMENTS
+    assert np.allclose([state['ht'] for state in fragments], HT_FRAG, atol=1.0)
+    assert np.allclose([state['vel_inertial'] for state in fragments], \
+        jump_fit.velocityAtLength(np.array([len_knot]))[0], atol=1.0)
+    assert np.all(k_factors > 1 - 1e-6) and np.all(k_factors < FRAG_K_MAX)
+    assert np.allclose(k_factors, [state['k_factor'] for state in fragments], rtol=1e-6)
+
+
+
+def testTheMeteoritesAreDrawn():
+    """ Every state gets one of the shapes and a density around the mean, never below DENSITY_MIN. """
+
+    states = [dict() for _ in range(400)]
+    drawMeteorites(states, ['sphere', 'brick'], 3500.0, density_sigma=500.0, seed=3)
+    densities = np.array([state['density'] for state in states])
+
+    assert set(state['shape'] for state in states) == {'sphere', 'brick'}
+    assert abs(np.mean(densities) - 3500.0) < 100.0
+    assert abs(np.std(densities) - 500.0) < 60.0
+    assert np.min(densities) >= DENSITY_MIN
+
+    drawMeteorites(states, None, 3000.0)
+    assert all((state['shape'] is None) and (state['density'] == 3000.0) for state in states)
+
