@@ -371,7 +371,7 @@ def sampleTrajectory(traj, beg_ht, end_ht, sample_step, show_plots=False, by_tim
         radiant_eci = drag_fit.radiantAtLength(len_val)[0]
         azim_norot, elev_norot, _ = derotatedRadiantAltAz(traj.v_init*radiant_eci, height_eci, jd, lat, lon)
 
-        # Compute the dynamic pressure with the velocity relative to the air, which moves with the ground
+        # Compute the dynamic pressure with the velocity relative to the ground
         vel_norot = vel_norot_array[i]
         dyn_pressure = rho_array[i]*vel_norot**2
 

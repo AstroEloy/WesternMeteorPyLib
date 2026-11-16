@@ -106,6 +106,7 @@ def testTheNominalStateIsThatOfTheSamples():
     assert abs(np.degrees(samples.elev_norot[0]) - nominal['elev']) < 1e-6
     vel_ground = best_fit.velocityAtLength(np.array([best_fit.len_last]))[0] - best_fit.v_rotation
     assert abs(nominal['vel'] - vel_ground) < 0.1
+    assert abs(samples.vel_norot[0] - nominal['vel']) < 0.1
 
 
 
@@ -402,17 +403,24 @@ def testTheHandoverIsPreparedAndItsFallsCollected(tmp_path):
     assert os.path.isfile(os.path.join(out_dir, 'falls.png'))
     for v_fit in nominal['check_vel']:
         assert "{:.0f}/{:.0f} m/s".format(v_fit, v_fit) in summary
-    assert "Leading body: 12 falls of 6 clones (Monte Carlo runs)" in summary
-    assert "Fragments of the last fragmentation: 6 falls of 3 fragments" in summary
+    assert "Leading body: 12 falls of 6 runs" in summary
+    assert "Fragments of the last fragmentation: 6 falls of 3 runs" in summary
     assert len(glob.glob(os.path.join(out_dir, 'clones', 'clone_*'))) == 6
+
+    # A run without Monte Carlo falls counts with its nominal fall
+    os.remove(os.path.join(out_dir, 'clones', 'clone_0002', 'mc_1.5_kg.txt'))
+    summary = summarizeFalls(out_dir, handover)
+    assert "Leading body: 11 falls of 6 runs" in summary
+    assert "1 runs without Monte Carlo falls count with their nominal fall" in summary
 
 
 
 
 
 def testTheHandoverRefusesAnIncoherentAtmosphereOrSettings(tmp_path):
-    """ The profile has to cover the starting heights and keep its winds, as OpenDarkflight takes them, and
-        the seed and the largest K factor of the fragments have to make sense.
+    """ The profile has to cover the starting heights and keep its winds, as OpenDarkflight takes them, the
+        trajectory needs an orbit for the rotation of the Earth, and the seed and the largest K factor of the
+        fragments have to make sense.
     """
 
     traj, _ = fragmentedTrajectory(SPREAD)
@@ -426,6 +434,12 @@ def testTheHandoverRefusesAnIncoherentAtmosphereOrSettings(tmp_path):
         with pytest.raises(ValueError, match="winds"):
             prepareHandover(traj, str(tmp_path/'still'), [HT_FRAG], loadProfile(tmp_path/'still.csv', \
                 use_winds=False), n_clones=2)
+
+        no_orbit = copy.copy(traj)
+        no_orbit.orbit = None
+        with pytest.raises(ValueError, match="no orbit"):
+            prepareHandover(no_orbit, str(tmp_path/'no_orbit'), [HT_FRAG], loadProfile(tmp_path/'p.csv'), \
+                n_clones=2)
 
         with pytest.raises(ValueError, match="seed"):
             handoverClones(traj, [HT_FRAG], n_clones=2, seed=-1)
@@ -465,3 +479,21 @@ def testSeveralNominalOutputsAreRefused(tmp_path):
 
     with pytest.raises(ValueError, match="nominal outputs"):
         readOdfRun(str(tmp_path))
+
+
+
+def testFragmentsAboveTheProfileAreLeftOut(tmp_path):
+    """ A profile which covers the starting point of the leading body but not the fragmentation above it
+        leaves the fragments out, and the report says why.
+    """
+
+    traj, _ = fragmentedTrajectory(SPREAD)
+    profile = loadProfile(tmp_path/'profile.csv', ht_max=HT_FRAG - 1000.0)
+
+    with contextlib.redirect_stdout(io.StringIO()):
+        handover, ini_paths = prepareHandover(traj, str(tmp_path/'handover'), [HT_FRAG], profile, \
+            n_clones=2, n_fragments=3)
+
+    assert handover['fragments'] == []
+    assert len(ini_paths) == 1 + 2
+    assert "No fragments: the fragmentation at" in handoverReport(handover)

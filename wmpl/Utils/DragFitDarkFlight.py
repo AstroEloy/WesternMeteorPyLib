@@ -6,12 +6,12 @@ as a drag-only flight with a constant ballistic coefficient K. OpenDarkflight ta
 (ballistic_coeff, in its pull request #45) and gives the meteorite the mass of that K for its shape and
 density, so the motion stays the same across the hand-over whatever the shape. Both take the air density and
 the winds from the same atmosphere profile (--atm_profile), which has to cover the starting heights, so the
-dark flight starts in the air the drag fit ended in. The speed handed over is the speed relative to the ground
-the drag of the fit acts on, so that K gives the same deceleration on both sides; the summary checks the
-speeds of both 0.25 to 1 km below the hand-over. The vertical wind of a profile is used by OpenDarkflight
-only.
-WMPL does not import OpenDarkflight: it writes its inputs and, with --run, runs it from its own environment
-and reads its outputs.
+dark flight starts in the air the drag fit ended in. The trajectory has to be solved with its orbit, which
+gives the rotation of the Earth along it. The speed handed over is the speed relative to the ground the drag
+of the fit acts on, so that K gives the same deceleration on both sides; the summary checks the speeds of both
+0.25 to 1 km below the hand-over. The vertical wind of a profile is used by OpenDarkflight only. WMPL does not
+import OpenDarkflight: it writes its inputs and, with --run, runs it from its own environment and reads its
+outputs.
 
 The uncertainty of K at the last point is dominated by how spread the last fragmentation was, which the
 motion does not fix (DragFit.spreadScan). Every spread which fits as well as the best one (Delta chi2 <= 4) is
@@ -34,11 +34,12 @@ the statistical wind errors of OpenDarkflight, unless --odf_option sets another 
 then those of the Monte Carlo runs.
 
 The fragments of the last fragmentation start at its height with the state of the fit there, and a K between
-that of the leading body just below the jump and --frag_k_max times it, log-uniform: smaller bodies of the
-same shape and density as the leading body they broke from, down to 1/frag_k_max^3 of its mass.
-OpenDarkflight gives them the sideways kick of Passey and Melosh (1980) for that ratio of radii in its Monte
-Carlo runs. It does not ablate them, while they start at the speed of the fireball, so their K is the one at
-the breakup.
+that of the leading body after the fragmentation and --frag_k_max times it, log-uniform: smaller bodies of the
+shape and density drawn for each, which the leading body they broke from is taken to share, down to
+1/frag_k_max^3 of its mass. OpenDarkflight gives them the sideways kick of Passey and Melosh (1980) for that
+ratio of radii in its Monte Carlo runs. It does not ablate them, while they start at the speed of the
+fireball, so their K is the one at the breakup. If the fragmentation is above the top of the atmosphere
+profile, the fragments are left out.
 
 On the command line, with the heights of the flares, the atmosphere profile and where OpenDarkflight is:
 
@@ -384,7 +385,7 @@ def handoverClones(traj, knot_hts, n_clones=200, seed=0, geometry=True, mc_lines
 
         i_knot = np.argmax(np.where(knots, nominal_fit.ramp_beg, -np.inf))
         len_knot = nominal_fit.ramp_beg[i_knot]
-        len_after = len_knot + nominal_fit.ramp_len[i_knot]
+        len_after = min(len_knot + nominal_fit.ramp_len[i_knot], nominal_fit.len_last)
         k_after, _, _ = stateAtLength(nominal_fit, nominal_fit.params, len_after)
         _, vel, time = stateAtLength(nominal_fit, nominal_fit.params, len_knot)
 
@@ -406,8 +407,9 @@ def handoverClones(traj, knot_hts, n_clones=200, seed=0, geometry=True, mc_lines
 
 def drawMeteorites(states, shapes, density, density_sigma=0.0, seed=0):
     """ Give every state a shape drawn from a list and a bulk density drawn from a normal distribution, kept
-        above DENSITY_MIN. A fragment shares its shape and density with the leading body it broke from, so
-        that its K over that of the leading body is the ratio of their radii.
+        above DENSITY_MIN. The leading body a fragment broke from is taken to have the shape and the density
+        drawn for the fragment, so that the K of the fragment over the K measured for the leading body is
+        the ratio of their radii, whatever the shape and the density.
 
     Arguments:
         states: [list] States (see handoverState()), changed in place.
@@ -542,6 +544,14 @@ def prepareHandover(traj, out_dir, knot_hts, atm_profile, n_clones=200, seed=0, 
             - ini_paths: [list] Paths of the OpenDarkflight inputs, the nominal one first.
     """
 
+    # Without an orbit the drag fit, like the solver, leaves out the rotation of the Earth, which the dark
+    #   flight above the ground needs, unless the stations were fixed and the speeds are already relative to
+    #   the ground
+    no_orbit = getattr(getattr(traj, 'orbit', None), 'v_init_norot', None) is None
+    if no_orbit and getattr(traj, 'orbit_los_success', True):
+        raise ValueError("The trajectory has no orbit, so the drag fit leaves out the rotation of the Earth "
+            "along it: solve it with the orbit for a dark flight")
+
     # The dark flight always takes the winds of the profile, so the drag fit has to as well
     if not atm_profile.use_winds:
         raise ValueError("OpenDarkflight takes the winds of the atmosphere profile, so the drag fit has to "
@@ -559,12 +569,25 @@ def prepareHandover(traj, out_dir, knot_hts, atm_profile, n_clones=200, seed=0, 
     drawMeteorites([nominal], shapes[:1] if shapes else None, density)
     drawMeteorites(clones + fragments, shapes, density, density_sigma=density_sigma, seed=seed)
 
-    # The profile has to cover the starting heights, where OpenDarkflight matches K in its own air
-    start_hts = [state['ht'] for state in [nominal] + clones + fragments]
+    # The profile has to cover the starting heights of the leading body, where OpenDarkflight matches K in its
+    #   own air
+    start_hts = [state['ht'] for state in [nominal] + clones]
     try:
         atm_profile.checkCoverage(min(start_hts), max(start_hts))
     except ValueError as e:
         raise ValueError("The dark flight would not start in the air of the drag fit: {:s}".format(str(e)))
+
+    # Leave out the fragments if the profile does not cover the height of the fragmentation
+    fragments_note = None
+    if fragments and (max(state['ht'] for state in fragments) > atm_profile.ht_max):
+        fragments_note = "the fragmentation at {:.2f} km is above the top of the atmosphere profile, " \
+            "{:.2f} km".format(fragments[0]['ht']/1000, atm_profile.ht_max/1000)
+        fragments = []
+
+    # Remove the falls of an earlier hand-over
+    for file_name in ('falls.csv', 'falls.png'):
+        if os.path.isfile(os.path.join(out_dir, file_name)):
+            os.remove(os.path.join(out_dir, file_name))
 
     ref_time = jd2Date(traj.jdt_ref, dt_obj=True).strftime('%Y-%m-%d %H:%M:%S.%f')
 
@@ -594,7 +617,7 @@ def prepareHandover(traj, out_dir, knot_hts, atm_profile, n_clones=200, seed=0, 
     # Save the hand-over and its settings
     handover = dict(nominal=nominal, clones=clones, fragments=fragments, scan=scan, \
         atm_profile=os.path.abspath(atm_profile.path), atm_profile_sha256=atm_profile.sha256, \
-        atm_profile_winds=atm_profile.use_winds, mc_uncertainties=mc_source, \
+        atm_profile_winds=atm_profile.use_winds, mc_uncertainties=mc_source, fragments_note=fragments_note, \
         n_mc_lines=len(mc_lines or []), settings=dict(knot_hts=list(map(float, knot_hts)), \
         n_clones=n_clones, seed=seed, n_fragments=n_fragments, frag_k_max=frag_k_max, shapes=shapes, \
         density=density, density_sigma=density_sigma, drag_model=drag_model, end_ht=end_ht, mc_runs=mc_runs, \
@@ -635,13 +658,14 @@ def handoverReport(handover):
     """
 
     nominal, clones, fragments, scan = [handover[key] for key in ('nominal', 'clones', 'fragments', 'scan')]
+    settings = handover.get('settings', {})
     k_clones = np.array([state['k'] for state in clones])
     vel_clones = np.array([state['vel'] for state in clones])
 
     out = []
     out.append("Hand-over at the last point: {:.3f} km, {:.6f}, {:.6f}, radiant azim {:.3f}, elev {:.3f} " \
         "deg".format(nominal['ht']/1000, nominal['lat'], nominal['lon'], nominal['azim'], nominal['elev']))
-    if nominal['spread'] == 0:
+    if nominal.get('spread', 0.0) == 0:
         out.append("Nominal (jumps): K = {:.3e} m^2/kg, speed relative to the ground {:.1f} m/s".format( \
             nominal['k'], nominal['vel']))
     else:
@@ -657,15 +681,16 @@ def handoverReport(handover):
             np.median(k_clones), np.min(vel_clones), np.max(vel_clones), \
             np.corrcoef(np.log(k_clones), vel_clones)[0, 1]))
 
-    if nominal['unconstrained']:
+    if nominal.get('unconstrained', False):
         out.append("Some parameters of the fits are not constrained by the data, and the clones do not "
             "spread along them")
 
     # Say where the lines come from
-    if nominal['lines_from'] == 'monte_carlo':
+    lines_from = nominal.get('lines_from', 'none')
+    if lines_from == 'monte_carlo':
         out.append("Lines drawn from the {:d} Monte Carlo trajectories of {:s}".format( \
             handover['n_mc_lines'], str(handover['mc_uncertainties'])))
-    elif nominal['lines_from'] == 'covariance':
+    elif lines_from == 'covariance':
         out.append("Lines drawn from the covariance of the line-of-sight fit (no Monte Carlo uncertainties)")
     else:
         out.append("The lines are not drawn: no Monte Carlo uncertainties nor covariance of the "
@@ -676,9 +701,11 @@ def handoverReport(handover):
         out.append("Fragments: {:d} from {:.3f} km, K {:.3e} to {:.3e} m^2/kg".format(len(fragments), \
             fragments[0]['ht']/1000, min(state['k'] for state in fragments), \
             max(state['k'] for state in fragments)))
-        if handover['settings']['mc_runs'] == 0:
+        if settings.get('mc_runs', 0) == 0:
             out.append("Without Monte Carlo runs of OpenDarkflight the fragments get no sideways kick")
-    elif handover['settings']['n_fragments']:
+    elif handover.get('fragments_note'):
+        out.append("No fragments: {:s}".format(handover['fragments_note']))
+    elif settings.get('n_fragments'):
         out.append("No fragments: no fragmentation within the observed part")
 
 
@@ -819,14 +846,25 @@ def collectFalls(out_dir, kind, states, lat_ref, lon_ref, azim_motion):
         azim_motion: [float] Azimuth of the direction of motion (deg, +E of N).
 
     Return:
-        [list] One dict per fall.
+        (falls, n_missing, n_unreadable):
+            - falls: [list] One dict per fall, the nominal run of every run with mc_run 0.
+            - n_missing: [int] Number of runs without an output.
+            - n_unreadable: [int] Number of runs whose directory holds the outputs of several runs.
     """
 
     falls = []
+    n_missing, n_unreadable = 0, 0
     for state in states:
 
-        run = readOdfRun(os.path.join(out_dir, kind + 's', '{:s}_{:04d}'.format(kind, state[kind])))
+        run_dir = os.path.join(out_dir, kind + 's', '{:s}_{:04d}'.format(kind, state[kind]))
+        try:
+            run = readOdfRun(run_dir)
+        except ValueError:
+            n_unreadable += 1
+            continue
+
         if run is None:
+            n_missing += 1
             continue
 
         lat_arr = [run['lat']] + run['mc_lat']
@@ -839,15 +877,36 @@ def collectFalls(out_dir, kind, states, lat_ref, lon_ref, azim_motion):
                 lat_deg=lat, lon_deg=lon, along_km=float(a), cross_km=float(c)))
 
 
-    return falls
+    return falls, n_missing, n_unreadable
+
+
+
+def perturbedFalls(falls):
+    """ Keep the Monte Carlo falls of every run which has them, and the nominal fall of the others.
+
+    Arguments:
+        falls: [list] Falls (see collectFalls()).
+
+    Return:
+        (kept, n_nominal_only):
+            - kept: [list] The falls kept.
+            - n_nominal_only: [int] Number of runs without Monte Carlo falls.
+    """
+
+    with_mc = set(fall['number'] for fall in falls if fall['mc_run'] > 0)
+    kept = [fall for fall in falls if (fall['mc_run'] > 0) or (fall['number'] not in with_mc)]
+
+
+    return kept, len(set(fall['number'] for fall in falls) - with_mc)
 
 
 
 def summarizeFalls(out_dir, handover):
     """ Collect the falls of the OpenDarkflight runs of a hand-over, save them to falls.csv and plot them to
         falls.png, and return a summary, with the speeds of the drag fit and of OpenDarkflight below the
-        hand-over, which have to agree. With a Monte Carlo, the falls are those of its runs: the nominal run
-        of every clone, without wind errors nor kick, is kept in falls.csv with mc_run 0 but left out.
+        hand-over, which have to agree. The falls of a run are those of its Monte Carlo runs if it has any,
+        and else its nominal fall; the nominal fall of every run, without wind errors nor kick, is kept in
+        falls.csv with mc_run 0.
 
     Arguments:
         out_dir: [str] Output directory of the hand-over.
@@ -864,32 +923,33 @@ def summarizeFalls(out_dir, handover):
         return "No nominal OpenDarkflight output in {:s}".format(out_dir)
 
     ref = (nominal_run['lat'], nominal_run['lon'], (nominal['azim'] + 180.0)%360.0)
-    falls = collectFalls(out_dir, 'clone', clones, *ref)
-    frag_falls = collectFalls(out_dir, 'fragment', fragments, *ref)
-    if not falls:
-        return "No OpenDarkflight output of the clones in {:s}".format(out_dir)
+    falls, n_missing, n_unreadable = collectFalls(out_dir, 'clone', clones, *ref)
+    frag_falls, frag_missing, frag_unreadable = collectFalls(out_dir, 'fragment', fragments, *ref)
+    if not (falls or frag_falls):
+        return "No OpenDarkflight output of the clones nor the fragments in {:s}".format(out_dir)
 
     # Save the falls
     with open(os.path.join(out_dir, 'falls.csv'), 'w', newline='') as f:
-        writer = csv.DictWriter(f, fieldnames=list(falls[0].keys()))
+        writer = csv.DictWriter(f, fieldnames=list((falls + frag_falls)[0].keys()))
         writer.writeheader()
         writer.writerows(falls + frag_falls)
 
-    # With a Monte Carlo, keep only its runs
-    perturbed = lambda rows: [row for row in rows if row['mc_run'] > 0] or rows
-    falls, frag_falls = perturbed(falls), perturbed(frag_falls)
+    # Keep the Monte Carlo falls of the runs which have them
+    falls, nominal_only = perturbedFalls(falls)
+    frag_falls, frag_nominal_only = perturbedFalls(frag_falls)
 
     column = lambda rows, key: np.array([row[key] for row in rows], dtype=float)
-    along, cross, k_arr = column(falls, 'along_km'), column(falls, 'cross_km'), column(falls, 'k_m2_kg')
 
     # Plot the falls on the ground around the nominal one, the clones coloured by K
     fig, ax = plt.subplots(figsize=(8, 6))
     if frag_falls:
         ax.scatter(column(frag_falls, 'cross_km'), column(frag_falls, 'along_km'), s=5, c='0.6', marker='x', \
             label='Fragments of the last fragmentation')
-    points = ax.scatter(cross, along, c=np.log10(k_arr), s=6, cmap='viridis', label='Leading body')
+    if falls:
+        points = ax.scatter(column(falls, 'cross_km'), column(falls, 'along_km'), \
+            c=np.log10(column(falls, 'k_m2_kg')), s=6, cmap='viridis', label='Leading body')
+        fig.colorbar(points, ax=ax, label='log10 K of the leading body (m$^2$/kg)')
     ax.plot(0, 0, 'r*', ms=14, label='Nominal')
-    fig.colorbar(points, ax=ax, label='log10 K of the leading body (m$^2$/kg)')
     ax.set_xlabel('Across the motion, right (km)')
     ax.set_ylabel('Along the motion, downrange (km)')
     ax.set_aspect('equal', adjustable='datalim')
@@ -910,27 +970,38 @@ def summarizeFalls(out_dir, handover):
         zip(nominal['check_ht'], nominal['check_vel'], vel_odf)]
     out.append("Speed relative to the ground below the hand-over at {:.3f} km, drag fit / OpenDarkflight: "
         "{:s}".format(nominal['ht']/1000, ", ".join(checks)))
-    out.append("Leading body: {:d} falls of {:d} clones{:s}, percentiles {:s} of:".format(len(falls), \
-        len(clones), " (Monte Carlo runs)" if falls[0]['mc_run'] > 0 else "", \
-        "/".join("{:g}".format(p) for p in pct)))
-    out.append("    along the motion (km): " + pct_text(along, "{:+.2f}"))
-    out.append("    across the motion (km): " + pct_text(cross, "{:+.2f}"))
-    out.append("    K (m^2/kg): " + pct_text(k_arr, "{:.3e}"))
-    out.append("    mass for K (kg): " + pct_text(column(falls, 'mass_kg'), "{:.3g}"))
+
+    for label, rows, states, n_nominal_only, n_out, n_bad, k_label in ( \
+        ("Leading body", falls, clones, nominal_only, n_missing, n_unreadable, "K (m^2/kg)"), \
+        ("Fragments of the last fragmentation", frag_falls, fragments, frag_nominal_only, frag_missing, \
+            frag_unreadable, None)):
+
+        if not states:
+            continue
+
+        out.append("{:s}: {:d} falls of {:d} runs, percentiles {:s} of:".format(label, len(rows), \
+            len(states), "/".join("{:g}".format(p) for p in pct)))
+        if rows:
+            out.append("    along the motion (km): " + pct_text(column(rows, 'along_km'), "{:+.2f}"))
+            out.append("    across the motion (km): " + pct_text(column(rows, 'cross_km'), "{:+.2f}"))
+            if k_label:
+                out.append("    {:s}: ".format(k_label) + pct_text(column(rows, 'k_m2_kg'), "{:.3e}"))
+            out.append("    mass for K (kg): " + pct_text(column(rows, 'mass_kg'), "{:.3g}"))
+
+        # Say which runs are missing or only have their nominal fall
+        if n_out or n_bad:
+            out.append("    {:d} runs without an output and {:d} with the outputs of several runs are left "
+                "out".format(n_out, n_bad))
+        if n_nominal_only and (len(rows) > n_nominal_only):
+            out.append("    {:d} runs without Monte Carlo falls count with their nominal fall".format( \
+                n_nominal_only))
 
     if frag_falls:
-
-        out.append("Fragments of the last fragmentation: {:d} falls of {:d} fragments, percentiles " \
-            "of:".format(len(frag_falls), len(fragments)))
-        out.append("    along the motion (km): " + pct_text(column(frag_falls, 'along_km'), "{:+.2f}"))
-        out.append("    across the motion (km): " + pct_text(column(frag_falls, 'cross_km'), "{:+.2f}"))
-        out.append("    mass for K (kg): " + pct_text(column(frag_falls, 'mass_kg'), "{:.3g}"))
-        out.append("    The sideways kicks of the fragments follow Passey & Melosh (1980), Icarus 42, "
-            "211-233. Please cite it.")
+        out.append("The sideways kicks of the fragments follow Passey & Melosh (1980), Icarus 42, 211-233. "
+            "Please cite it.")
 
 
     return "\n".join(out)
-
 
 
 

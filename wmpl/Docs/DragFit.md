@@ -146,14 +146,15 @@ meteorite the mass of that `K` for its own shape and density.
 `python -m wmpl.Utils.DragFitDarkFlight traj.pickle out_dir -f HT [HT ...] --atm_profile profile.csv [options]`
 
 The dark flight starts at the last observed point, where the drag fit already flies on with a constant `K`.
-OpenDarkflight takes `K` directly (`ballistic_coeff`, its pull request #45) and gives the meteorite the mass of
-that `K` for its shape and density. Both take the density and the winds of the same profile, which has to cover
-the starting heights (the hand-over stops otherwise, as is `--no_winds` refused), so the dark flight starts in
-the air the drag fit ended in. The speed handed over is the speed relative to the ground the drag of the fit
-acts on, so that `K` gives the same deceleration on both sides, and the summary compares the speeds of the two
-models 0.25 to 1 km below the hand-over, which have to agree. The vertical wind of a profile is only used by
-OpenDarkflight. WMPL does not import OpenDarkflight: it writes its inputs and, with `--run`, runs it from its
-own environment and reads its outputs.
+OpenDarkflight takes `K` directly (`ballistic_coeff`, its pull request #45) and gives the meteorite the mass
+of that `K` for its shape and density. Both take the density and the winds of the same profile, which has to
+cover the starting height of the leading body (the hand-over stops otherwise, and `--no_winds` is refused), so
+the dark flight starts in the air the drag fit ended in. The trajectory has to be solved with its orbit, which
+gives the rotation of the Earth along it. The speed handed over is the speed relative to the ground the drag
+of the fit acts on, so that `K` gives the same deceleration on both sides, and the summary compares the speeds
+of the two models 0.25 to 1 km below the hand-over, which have to agree. The vertical wind of a profile is
+only used by OpenDarkflight. WMPL does not import OpenDarkflight: it writes its inputs and, with `--run`, runs
+it from its own environment and reads its outputs.
 
 The uncertainty of `K` at the end is dominated by how spread the last fragmentation was. Every spread within
 `Delta chi2 <= 4` is equally likely, and every clone is one of those fits with its parameters drawn from their
@@ -175,10 +176,12 @@ falls are then those of the Monte Carlo runs; the unperturbed run of every clone
 `mc_run` 0. Every OpenDarkflight run with a Monte Carlo uses all the cores, so `--nproc` is 2 by default.
 
 The fragments of the last fragmentation (`--fragments`) start at its height with the state of the fit there
-and a `K` from that of the leading body after the jump to `--frag_k_max` times it, log-uniform: smaller bodies
-of the same shape and density as the leading body they broke from. Their Monte Carlo runs get the sideways kick
+and a `K` from that of the leading body after the fragmentation to `--frag_k_max` times it, log-uniform:
+smaller bodies of the shape and density drawn for each, which the leading body they broke from is taken to
+share, so that the ratio of their `K` is the ratio of their radii. Their Monte Carlo runs get the sideways kick
 of Passey and Melosh (1980) for that ratio of radii. OpenDarkflight does not ablate them, so their `K` stays
-that of the breakup.
+that of the breakup. If the fragmentation is above the top of the profile, the fragments are left out, while
+the starting point of the leading body has to be covered.
 
 | Flag | Description |
 | :--- | :--- |
@@ -252,7 +255,7 @@ Drag model of the motion: dv/dt = -K*rho*v² + g
 
 - **Residuals RMS** is the scatter of the observed lengths around the model, along the track.
 - **Dyn pres** is the dynamic pressure `rho*v^2` at the top of the segment, with the velocity
-  relative to the air, which is assumed to be at rest relative to the ground (no wind).
+  relative to the ground, without the winds of an atmosphere profile.
 - **K std** is the relative uncertainty of `K` at the bottom of the segment (1 sigma). It is large
   high up, where the meteor barely decelerates, and `inf` where the data do not constrain `K`.
 - **Growth** is the factor by which `K` grows in the segment, and **Signif** its significance in
@@ -307,8 +310,10 @@ printed at the end. For the example trajectory, sampled every 2 km from 118 to 9
   across the path: 0.5 deg at the end and 2 deg at 5 km/s for the synthetic fireball of the tests.
 - **Decel** is `K*rho*v^2 - g_along`, positive when the meteor slows down. Above the beginning, without
   drag, it is the small negative acceleration by gravity.
-- **Dyn pres** is `rho*v^2` with the velocity relative to the air, as in the `DragFit` table. The
-  air is assumed to be at rest relative to the ground (no wind), so this velocity is `Vgnd`. The ECI
+- **Dyn pres** is `rho*v^2` with the velocity relative to the ground, `Vgnd`, as in the `DragFit`
+  table, without the winds of an atmosphere profile. `Vgnd` is the modelled inertial speed less the
+  rotation of the Earth along the trajectory, the speed the drag acts on, also handed to a dark flight
+  by `DragFitDarkFlight`. The ECI
   velocity differs from it by up to the speed of the Earth's rotation (465 m/s at the equator). For
   the synthetic fireball of the tests, sampled from 18 to 7 km/s at 45 deg latitude, the dynamic
   pressure with the ECI velocity would be 2 to 6% lower.
