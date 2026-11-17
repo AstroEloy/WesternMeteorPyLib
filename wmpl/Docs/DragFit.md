@@ -138,7 +138,9 @@ Which tool to use, from the solved trajectory to the strewn field:
 | :--- | :--- | :--- |
 | Motion and `K` along the trajectory | `wmpl.Utils.DragFit` (`-f` with the heights of the flares, `--atm_profile`) | `K` and its uncertainty, the final dynamic mass for an assumed shape and density |
 | Positions, speeds and `K` at given heights or times | `wmpl.Utils.SampleTrajectoryPositions` (same options) | The samples, e.g. to start a dark flight by hand |
-| Dark flight with its uncertainties | `wmpl.Utils.DragFitDarkFlight` | OpenDarkflight inputs from the last observed point, the falls of the clones and the fragments |
+| Dark flight of the leading body with its uncertainties | `wmpl.Utils.DragFitDarkFlight` | OpenDarkflight inputs from the last observed point, the falls of the clones and of the fragments of the last fragmentation |
+| Falls of the fragments which broke off at given heights | `wmpl.Utils.DragFitFragmentFalls --direct` | The falls by breakup and mass, with the kicks and the wind errors |
+| Where meteorites found broke off | `wmpl.Utils.DragFitFragmentFalls --inverse` | The breakup of each, with its range (with ablation, also the start of the dark flight) |
 
 The dark flight does not need a mass, nor `wmpl.Utils.DynamicMassFit`: OpenDarkflight takes `K` and gives the
 meteorite the mass of that `K` for its own shape and density.
@@ -181,7 +183,9 @@ smaller bodies of the shape and density drawn for each, which the leading body t
 share, so that the ratio of their `K` is the ratio of their radii. Their Monte Carlo runs get the sideways kick
 of Passey and Melosh (1980) for that ratio of radii. OpenDarkflight does not ablate them, so their `K` stays
 that of the breakup. If the fragmentation is above the top of the profile, the fragments are left out, while
-the starting point of the leading body has to be covered.
+the starting point of the leading body has to be covered. For the fragments of any breakup, by mass and
+shape, `wmpl.Utils.DragFitFragmentFalls --direct` (below) flies each one from the breakup as well, with its
+kick across the motion, while OpenDarkflight draws the direction of its kick over all directions.
 
 | Flag | Description |
 | :--- | :--- |
@@ -230,6 +234,169 @@ print(summarizeFalls("out_dir", handover))
 
 `prepareHandover()` empties the run directories first, as OpenDarkflight names its outputs after the mass and
 those of an earlier run would be read again.
+
+### Falls of the fragments, direct and inverse (experimental)
+
+`python -m wmpl.Utils.DragFitFragmentFalls traj.pickle out_dir -f HT [HT ...] --atm_profile profile.csv --odf_python PY --odf_dir DIR (--direct HT [HT ...] --masses KG [KG ...] | --inverse meteorites.csv) [options]`
+
+A fragment breaks off the leading body with its speed and slows down by its own `K`, faster than the leading
+body as it is smaller, with the `K` of the drag model and shape of OpenDarkflight at every step (or a fixed
+`K`).
+
+**Without ablation** (`--sigma 0`, the default), OpenDarkflight flies the fragment from the breakup, with the
+speed and the direction of the leading body there: the whole flight in three dimensions, its path bent by
+gravity and pushed by the whole wind, exact within the drag model. A run takes some tens of seconds, as
+OpenDarkflight steps 0.1 m in height above 5.8 km/s.
+
+**With ablation** (`--sigma` above 0), which OpenDarkflight does not do, the flight down to where the fragment
+has slowed down to a few km/s (`--v_dark`, 3.5 km/s by default) is computed in WMPL (`wmpl.Utils.LuminousFlight`),
+in the density and the winds of the same profile, and OpenDarkflight takes it over from there. A small fragment
+gets there soon after the breakup, a large one far below it. That flight keeps to the ground track of the
+leading body: it takes the gravity and the wind along the motion, but not the bending of the path by gravity
+nor the wind across it, so it moves the falls of large fragments (see the validation below). The dark flight
+never ablates.
+
+Two shortcuts give wrong falls, and are not offered:
+
+- **Starting the dark flight at the breakup at a few km/s.** The fragment does not slow down on the spot: it
+  flies on along the line, kilometres for a large one, before it is that slow. Starting it at the breakup at a
+  few km/s moves its fall back along the trajectory by up to several km. The breakup is started at the speed
+  of the leading body.
+- **Scanning the speed at which the dark flight starts, with ablation.** It does not change the fall, as long
+  as the dark flight starts where the fragment has that speed: at 4.5 km/s it starts higher up than at
+  2.5 km/s, and flies the rest of the way the same. One speed is enough.
+
+**Validation** on a synthetic fireball (18 km/s, 45 deg, `K` = 1e-3 m²/kg, seen from 82 to 19 km, with a jump of
+`K` x3 at 30 km), in an exponential atmosphere with a 20 m/s wind, against OpenDarkflight from the breakup,
+for spheres of 3.8 and 60 g breaking off at 30 and 25 km:
+
+| Breakup, fragment | Without ablation, from the breakup | With ablation, along the ground track, dark flight from 2.5 / 3.5 / 4.5 km/s |
+| :--- | :--- | :--- |
+| 30 km, 3.8 g | 0 / 0 m | +0.7 / +9.9, +0.4 / +6.2, +0.4 / +4.3 m |
+| 25 km, 3.8 g | 0 / 0 m | +16 / -8, +12 / -7, +9 / -5 m |
+| 30 km, 60 g | 0 / 0 m | +73 / -29, +52 / -21, +39 / -15 m |
+| 25 km, 60 g | 0 / 0 m | +85 / -48, +57 / -32, +39 / -22 m |
+
+The differences are along / across the motion, the forced ablation path run with a negligible `sigma`. From the
+breakup the run is the reference itself. Along the ground track the large fragments land up to 85 m along and
+48 m across off, less for a higher `--v_dark`, while two fragments of similar `K` are moved alike. The inverse
+on the reference falls finds the breakup within 5 m without ablation (-4.5 and +0.6 m for breakups between
+the heights scanned every 250 m), and 3 to 29 m (3.8 g) and 303 to 306 m (60 g) too high along the ground track
+with the flight back up.
+
+**The sideways kick** of the breakup (`--kicks N`, N draws for every fragment or meteorite) follows Passey and
+Melosh (1980), Eq. 24: `U = V*sqrt(3/2*C*(R1/R2)*rho_air/rho_met)`, with `C = 1` (`--pm_c`; they fit 0.02 to
+1.52), `V` and `rho_air` at the breakup and `R1/R2` the ratio of the radii of the leading body and the
+fragment, taken from their `K` as if they had the same shape and density. It turns the direction of motion by
+`atan(U/V)` in a random direction around it at the breakup, which drag keeps. With ablation, it also moves
+the start of the dark flight sideways by the path flown since the breakup times its sine. The kick turns the
+inertial motion, so the motion relative to the ground turns by as much within the ratio of the speed of the
+rotation of the Earth to that of the fragment (~2%).
+
+**Ablation before the dark flight** (`--sigma`, in s²/km², 0 by default). The dark flight never ablates: below
+3-4 km/s the ablation has all but stopped. Before it, a fragment which broke off fast does, and its mass follows
+its speed through the air as `m = m0*exp(sigma/2*(v^2 - v0^2))`, its `K` growing as `m^(-1/3)`. So `sigma` is
+the fraction of its mass a body loses for every unit of kinetic energy per kg it dissipates,
+`sigma = -d(ln m)/d(v^2/2)`: 0.01 s²/km² is 1% of the mass for every MJ/kg, and slowing down from 15 to
+3.5 km/s, which dissipates 106 MJ/kg, leaves 35% of it. It is `sigma = Lambda/(2*Gamma*Q)`, with `Lambda` the
+fraction of the energy of the air that heats and ablates the surface, `Gamma` the drag coefficient and `Q` the
+energy to ablate 1 kg. The fireball types of Ceplecha et al. (1998, Table XVII) give apparent values of 0.014,
+0.042, 0.10 and 0.21 s²/km² for the types I (ordinary chondrites), II, IIIA and IIIB, which hold mostly the
+fragmentation. A value for the fireball itself follows from the alpha-beta fit of its leading body
+(`python -m wmpl.Utils.AlphaBeta traj.pickle -v -e --fitvinit`), as `beta = (1 - mu)*sigma*V_e^2/2`
+(Gritsevich 2009): `sigma = 2*beta/((1 - mu)*V_e^2)`, with `mu` from 0 (the area does not change) to 2/3 (the body
+shrinks keeping its shape). It holds all the mass loss of the leading body, its fragmentation included, so for a
+fragment it is an upper value; take `mu = 0` for it, as `mu = 2/3` triples it. With ablation the inverse scans
+the starts of the dark flight, which do not depend on `sigma`, and flies back up for the breakup and the mass
+there, so `--sigma 0 0.014` gives both, the breakup without ablation then along the ground track as well; the
+exact one is that of `--sigma 0` alone. In the direct mode the masses are those at the breakup.
+
+**The lines** (`--lines N`) are drawn as for the clones of the hand-over: from the Monte Carlo of the solution
+if it was solved with it (the `<name>_mc_uncertainties.pickle` in the `Monte Carlo` directory next to the
+trajectory pickle, found by default, or `--mc_uncertainties`), or else from the covariance of the line-of-sight
+fit. Each moves the breakup (or the start of the dark flight) across the line and turns its direction with
+it.
+
+**Direct** (`--direct HT [HT ...]`, the breakup heights in km): every fragment of `--masses` (kg, at the
+breakup) with `--density`, `--shape` (`sphere`, `brick`, `cube`, `cylinder`, `cone` or `A=<value>`),
+`--drag_model` and, where measured, `--sphericity` or `--flatness`, `--elongation` and `--volume_factor` (for
+`--drag_model bagheri`), as in OpenDarkflight. `--ks` gives fixed values of `K` instead, one for every mass.
+Every fragment gets a run without a kick nor a line drawn, from the breakup without ablation and from where
+it has slowed down with it, and max(`--kicks`, `--lines`) runs which each draw a
+kick and a line around the fitted one (below), as many as asked of each, every run with `--mc_runs` Monte Carlo
+runs of OpenDarkflight for its statistical wind errors. The range of the falls in the summary is taken from
+the falls which hold all these errors. The output directory gets `fragment_falls.json`, one input per run under
+`fragments/`, and after `--run` (or `--collect` later) `fragment_falls.csv` and `fragment_falls.png`, with the
+falls by breakup, along and across the motion from the last observed point of the leading body.
+
+**Inverse** (`--inverse meteorites.csv`): the CSV has the columns `name`, `lat`, `lon` (deg), `mass_kg` and
+`density` (kg/m³), and optionally `ground_ht_m` (or `--end_ht` in km, or `auto` for the terrain lookup of
+OpenDarkflight), `shape`, `drag_model`, `sphericity`, `flatness`, `elongation` and `volume_factor`, or `k_m2_kg`
+for a fixed `K`. Without a shape or a drag model, a meteorite is a sphere with the `dfn` drag, in the flight
+down and in OpenDarkflight alike (whose own default is a brick). For every meteorite:
+
+1. OpenDarkflight flies the meteorite from breakups on the line, with the speed of the leading body there, at
+   heights every `--scan_step` (0.25 km), from `--scan_top` (5 km above the highest fragmentation, or the
+   first observed point, by default) down to `--scan_bottom` (the last observed point), and the breakup whose
+   fall is as far along the motion as the meteorite is interpolated. What is left over across the motion tells
+   how well the wind and the line agree with it.
+2. `--mc_runs` (30 by default) Monte Carlo runs of OpenDarkflight at that breakup, the `--kicks` and the
+   `--lines` (30 by default) give the spread of the fall along the motion, added in quadrature, which turns
+   into a range of breakups.
+
+With ablation (`--sigma` above 0), the dark flight is started at `--v_dark` on the line at the scanned
+heights instead, from the highest fragmentation down; the start whose fall is as far along is found, and from
+it the meteorite flies back up the ground track until it has the speed of the leading body, for the breakup
+and the mass it had there, for every `sigma` given.
+
+The breakup assumes that the meteorite flew alone from the leading body, with its speed: if it broke off a
+larger fragment later, it broke off the leading body higher up and was born as a piece lower down. The shape matters most: the same meteorite traced
+back as a sphere or as a brick can give breakups kilometres apart, so its measured shape (`sphericity`, or
+better the form for `--drag_model bagheri`) and density are worth having. As the wind is the same for all the
+meteorites of a fall, their differences in breakup height are better known than where each broke off, and
+the report gives them for every pair. The output directory gets `inverse.json`, `inverse.txt` and `inverse.png`.
+
+| Flag | Description |
+| :--- | :--- |
+| `-f`, `--fragheights` | Heights of the fragmentations of the drag fit (km), e.g. those of the flares. |
+| `--direct`, `--masses`, `--ks` | Breakup heights (km), masses of the fragments (kg), and optionally their fixed `K` (m²/kg). |
+| `--density`, `--shape`, `--drag_model` | Bulk density (3500 kg/m³), shape (`sphere`) and drag model (`dfn`) of the fragments. |
+| `--sphericity`, `--flatness`, `--elongation`, `--volume_factor` | Measured form of the fragments, as in OpenDarkflight. |
+| `--inverse`, `--scan_top`, `--scan_bottom`, `--scan_step` | CSV of the meteorites found, and the breakups (with ablation, the starts) scanned (km). |
+| `--v_dark` | Speed relative to the ground where the dark flight starts with ablation (km/s). 3.5 by default. |
+| `--kicks`, `--pm_c` | Kicks of Passey and Melosh drawn for every fragment or meteorite (0 by default), and their constant `C` (1). |
+| `--lines`, `--mc_uncertainties` | Lines drawn around the fitted one (0 for `--direct`, 30 for `--inverse`), and the Monte Carlo uncertainties to draw them from (by default the one next to the trajectory pickle, if any). |
+| `--sigma` | Ablation coefficient before the dark flight (s²/km²), 0 by default, and then OpenDarkflight flies from the breakup. The inverse takes several and gives the breakup for each, along the ground track. |
+| `--mc_runs` | Monte Carlo runs of OpenDarkflight for the wind errors. 0 for `--direct`, 30 for `--inverse`. |
+| `--end_ht` | Height where the dark flight ends (km), or `auto`. |
+| `--run`, `--collect` | Direct: run OpenDarkflight and collect the falls, or only collect them. The inverse always runs it. |
+
+In Python:
+
+```python
+import os
+
+from wmpl.Utils.AtmosphereProfile import AtmosphereProfile
+from wmpl.Utils.DragFitDarkFlight import runOdf
+from wmpl.Utils.DragFitFragmentFalls import invertFalls, prepareFragmentFalls, readMeteorites, \
+    summarizeFragmentFalls
+from wmpl.Utils.Pickling import loadPickle
+
+traj = loadPickle(*os.path.split("/path/to/traj.pickle"))
+odf = ("/path/to/envs/opendf/bin/python", "/path/to/OpenDarkflight")
+profile = AtmosphereProfile("profile.csv")
+
+# Direct: fragments of 1 g to 1 kg from two breakups, with 10 kicks each
+setup, ini_paths = prepareFragmentFalls(traj, "direct", [35000.0, 30000.0], profile, [35000.0, 30000.0],
+    [0.001, 0.01, 0.1, 1.0], dict(density=3500.0, shape='sphere', drag_model='dfn'), n_kicks=10,
+    mc_runs=5, end_ht=0.25, odf_python=odf[0], odf_dir=odf[1])
+runOdf(ini_paths, *odf)
+print(summarizeFragmentFalls("direct"))
+
+# Inverse: the meteorites found
+results = invertFalls(traj, "inverse", [35000.0, 30000.0], profile, readMeteorites("meteorites.csv"), *odf,
+    n_kicks=10)
+```
 
 ---
 

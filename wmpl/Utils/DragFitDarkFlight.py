@@ -156,7 +156,7 @@ def lineMove(traj, eci_point, line):
 
 
 
-def handoverState(drag_fit, len_val, k_val, vel, time, line=None):
+def handoverState(drag_fit, len_val, k_val, vel, time, line=None, kick=None):
     """ Compute the state of the meteorite at a length along the trajectory for a dark flight.
 
     Arguments:
@@ -169,6 +169,10 @@ def handoverState(drag_fit, len_val, k_val, vel, time, line=None):
     Keyword arguments:
         line: [tuple] Point (m) and radiant vector of a line drawn around the fitted one (see drawLine()).
             None by default, for the fitted line.
+        kick: [tuple] Sideways kick of a breakup, as (angle, phase, path): the direction of motion is turned
+            by the angle (radians) towards the phase (radians, 0 to the right of the motion and pi/2 up), and
+            the point moves that way by path*sin(angle), for the path flown since the breakup (m). None by
+            default.
 
     Return:
         [dict] Ballistic coefficient (m^2/kg), speed relative to the ground and inertial speed (m/s), time
@@ -190,6 +194,16 @@ def handoverState(drag_fit, len_val, k_val, vel, time, line=None):
         move, turn = lineMove(traj, eci, line)
         eci = eci + move
         radiant_eci = vectNorm(radiant_eci + turn)
+        ht += np.dot(move, vectNorm(eci))
+
+    # Turn the direction and move the point by the kick, which drag keeps
+    if kick is not None:
+        angle, phase, path = kick
+        right = vectNorm(np.cross(vectNorm(eci), radiant_eci))
+        side = np.cos(phase)*right + np.sin(phase)*vectNorm(np.cross(radiant_eci, right))
+        move = path*np.sin(angle)*side
+        eci = eci + move
+        radiant_eci = vectNorm(np.cos(angle)*radiant_eci - np.sin(angle)*side)
         ht += np.dot(move, vectNorm(eci))
 
     jd = traj.jdt_ref + time/86400.0
@@ -433,9 +447,9 @@ def drawMeteorites(states, shapes, density, density_sigma=0.0, seed=0):
 
 
 def writeOdfInput(file_path, state, ref_time, atm_profile, density, shape=None, drag_model=None, \
-    end_ht=None, mc_runs=0, seed=0, odf_options=None):
+    end_ht=None, mc_runs=0, seed=0, odf_options=None, mass=None, shape_options=None):
     """ Write an OpenDarkflight input file which starts the dark flight from the given state with its
-        ballistic coefficient.
+        ballistic coefficient, or with a given mass.
 
     Arguments:
         file_path: [str] Path of the input file.
@@ -447,10 +461,15 @@ def writeOdfInput(file_path, state, ref_time, atm_profile, density, shape=None, 
     Keyword arguments:
         shape: [str] Shape of the meteorite for OpenDarkflight. None by default, for its default.
         drag_model: [str] Drag model of OpenDarkflight. None by default, for its default.
-        end_ht: [float] Height where the dark flight ends (km). None by default, for its default.
+        end_ht: [float or str] Height where the dark flight ends (km), or 'auto' for the terrain below the
+            falls. None by default, for its default.
         mc_runs: [int] Runs of the Monte Carlo of OpenDarkflight. 0 by default, for none.
         seed: [int] Seed of the Monte Carlo of OpenDarkflight. 0 by default.
         odf_options: [list] Further options as 'Section.option=value'. None by default.
+        mass: [float] Mass of the meteorite (kg), run instead of the K of the state. It is given as the
+            whole mass range too, as OpenDarkflight runs its default range otherwise. None by default.
+        shape_options: [dict] Further options of the meteorite, such as its sphericity, flatness, elongation
+            and volume_factor. None by default.
     """
 
     config = configparser.ConfigParser()
@@ -463,14 +482,26 @@ def writeOdfInput(file_path, state, ref_time, atm_profile, density, shape=None, 
         ht='{:.5f}'.format(state['ht']/1000), vel='{:.5f}'.format(state['vel']/1000), \
         az='{:.5f}'.format(state['azim']), alt='{:.5f}'.format(state['elev']), ref_time=ref_time, \
         ref_time_ds='{:.4f}'.format(state['time']))
-    if end_ht is not None:
+    if isinstance(end_ht, str):
+        config['Ejection']['end_ht'] = end_ht
+    elif end_ht is not None:
         config['Ejection']['end_ht'] = '{:.4f}'.format(end_ht)
 
-    config['Meteorite'] = dict(ballistic_coeff='{:.6e}'.format(state['k']), density='{:.1f}'.format(density))
+    # Start from the K of the state, or from the given mass alone
+    if mass is None:
+        config['Meteorite'] = dict(ballistic_coeff='{:.6e}'.format(state['k']), \
+            density='{:.1f}'.format(density))
+    else:
+        mass_str = '{:.6e}'.format(mass)
+        config['Meteorite'] = dict(mass_min=mass_str, mass_max=mass_str, mass_list=mass_str, \
+            density='{:.1f}'.format(density))
+
     if shape is not None:
         config['Meteorite']['shape'] = shape
     if drag_model is not None:
         config['Meteorite']['drag_model'] = drag_model
+    for name, value in (shape_options or {}).items():
+        config['Meteorite'][name] = str(value)
 
     config['Monte Carlo'] = dict(mc_enable=str(mc_runs > 0), mc_runs=str(max(mc_runs, 1)), \
         random_seed=str(seed))
@@ -499,6 +530,30 @@ def _cleanRunDir(run_dir):
     for file_path in glob.glob(os.path.join(run_dir, '*')):
         if os.path.isfile(file_path):
             os.remove(file_path)
+
+
+
+def checkDarkFlightInputs(traj, atm_profile):
+    """ Check that a trajectory and an atmosphere profile can be handed over to OpenDarkflight, and raise a
+        ValueError if not.
+
+    Arguments:
+        traj: [Trajectory object] Solved trajectory.
+        atm_profile: [AtmosphereProfile object] Atmosphere profile of the drag fit and the dark flight.
+    """
+
+    # Without an orbit the drag fit, like the solver, leaves out the rotation of the Earth, which the dark
+    #   flight above the ground needs, unless the stations were fixed and the speeds are already relative to
+    #   the ground
+    no_orbit = getattr(getattr(traj, 'orbit', None), 'v_init_norot', None) is None
+    if no_orbit and getattr(traj, 'orbit_los_success', True):
+        raise ValueError("The trajectory has no orbit, so the drag fit leaves out the rotation of the Earth "
+            "along it: solve it with the orbit for a dark flight")
+
+    # The dark flight always takes the winds of the profile, so the drag fit has to as well
+    if not atm_profile.use_winds:
+        raise ValueError("OpenDarkflight takes the winds of the atmosphere profile, so the drag fit has to "
+            "take them too for the dark flight to start in the same air")
 
 
 
@@ -544,18 +599,7 @@ def prepareHandover(traj, out_dir, knot_hts, atm_profile, n_clones=200, seed=0, 
             - ini_paths: [list] Paths of the OpenDarkflight inputs, the nominal one first.
     """
 
-    # Without an orbit the drag fit, like the solver, leaves out the rotation of the Earth, which the dark
-    #   flight above the ground needs, unless the stations were fixed and the speeds are already relative to
-    #   the ground
-    no_orbit = getattr(getattr(traj, 'orbit', None), 'v_init_norot', None) is None
-    if no_orbit and getattr(traj, 'orbit_los_success', True):
-        raise ValueError("The trajectory has no orbit, so the drag fit leaves out the rotation of the Earth "
-            "along it: solve it with the orbit for a dark flight")
-
-    # The dark flight always takes the winds of the profile, so the drag fit has to as well
-    if not atm_profile.use_winds:
-        raise ValueError("OpenDarkflight takes the winds of the atmosphere profile, so the drag fit has to "
-            "take them too for the dark flight to start in the same air")
+    checkDarkFlightInputs(traj, atm_profile)
 
     # Give the Monte Carlo of OpenDarkflight its statistical wind errors, which the options can override
     odf_options = list(odf_options or [])
