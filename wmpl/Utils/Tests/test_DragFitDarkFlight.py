@@ -17,6 +17,7 @@ import functools
 import glob
 import io
 import os
+import sys
 from types import SimpleNamespace
 
 import copy
@@ -80,6 +81,36 @@ def testTheClonesComeFromTheAcceptableSpreads():
     assert nominal['spread'] == spreads[np.argmin(delta_chi2)]
     best_fit = fitDrag(traj, knot_hts=[HT_FRAG], knot_spread=nominal['spread'])
     assert abs(nominal['k']/lastBallisticCoeff(best_fit) - 1) < 1e-9
+
+
+
+def testTheNominalStateIsThatOfTheBestSpreadAlsoWhenTheJumpsFit(monkeypatch):
+    """ The nominal state is that of the best spread also when the jumps fit the data within Delta chi2 <= 4,
+        as they are the end of the range of the spreads, with the smallest K.
+    """
+
+    module = sys.modules['wmpl.Utils.DragFitDarkFlight']
+    scan = module.spreadScan
+
+
+    def jumpsAcceptable(*args, **kwargs):
+        """ Scan the spreads, with the jumps acceptable but not the best. """
+
+        result = list(scan(*args, **kwargs))
+        result[2] = np.concatenate([[2.0], result[2][1:]])
+
+        return tuple(result)
+
+
+    monkeypatch.setattr(module, 'spreadScan', jumpsAcceptable)
+
+    traj, _ = fragmentedTrajectory(SPREAD)
+    with contextlib.redirect_stdout(io.StringIO()):
+        nominal, _, _, scan_out = module.handoverClones(traj, [HT_FRAG], n_clones=1, geometry=False)
+
+    assert scan_out['delta_chi2'][0] == 2.0
+    assert nominal['spread'] == scan_out['spreads'][int(np.argmin(scan_out['delta_chi2']))]
+    assert nominal['spread'] > 0
 
 
 
@@ -383,6 +414,7 @@ def testTheHandoverIsPreparedAndItsFallsCollected(tmp_path):
     assert saved['settings']['n_fragments'] == 3
     report = handoverReport(handover)
     assert "Hand-over at the last point" in report
+    assert "Jumps: K = {:.3e} m^2/kg".format(handover['scan']['k_last'][0]) in report
     assert "Fragments: 3 from" in report
 
     # Put the outputs of OpenDarkflight in place, the nominal one with the speeds of the drag fit below
@@ -404,6 +436,7 @@ def testTheHandoverIsPreparedAndItsFallsCollected(tmp_path):
     for v_fit in nominal['check_vel']:
         assert "{:.0f}/{:.0f} m/s".format(v_fit, v_fit) in summary
     assert "Leading body: 12 falls of 6 runs" in summary
+    assert "median fall: 0.002500, 0.000000" in summary
     assert "Fragments of the last fragmentation: 6 falls of 3 runs" in summary
     assert len(glob.glob(os.path.join(out_dir, 'clones', 'clone_*'))) == 6
 

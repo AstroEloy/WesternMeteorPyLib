@@ -20,8 +20,9 @@ covariance. K and the speed at the last point of a clone come from the same para
 correlation: a larger K comes with a lower speed, both of which shorten the dark flight, while drawing them
 separately would mix them and narrow the strewn field. The spread only makes K grow below the flares, so its
 range is one-sided, which a log-normal K could not give either. The nominal state, from which the falls are
-measured, is the fit with the fragmentations as jumps, the K of DragFit, or the best spread if the jumps do
-not fit the data.
+measured, is the fit of the best spread. The jumps, the K of DragFit, are the end of that range with the
+smallest K and the longest flight, so most falls are short of theirs, and the summary also gives the median
+fall of the clones, the centre of the strewn field.
 
 The direction of motion relative to the ground is derotated with the initial velocity, as in
 wmpl.Utils.SampleTrajectoryPositions, as drag keeps it. Every clone also gets its own line, which moves its
@@ -333,8 +334,8 @@ def handoverClones(traj, knot_hts, n_clones=200, seed=0, geometry=True, mc_lines
 
     Return:
         (nominal, clones, fragments, scan):
-            - nominal: [dict] State of the fit with the fragmentations as jumps (see handoverState()), or of
-                the best spread if the jumps are not acceptable, with its spread (m), the speeds relative to
+            - nominal: [dict] State of the fit of the best spread (see handoverState()), the one with the
+                smallest Delta chi2, with its spread (m), the speeds relative to
                 the ground of its drag-only flight below the last point (m/s) at the heights CHECK_DEPTHS
                 below it (m), where the lines were drawn from ('monte_carlo', 'covariance' or 'none'), and
                 whether some parameters of the fits are not constrained by the data, along which the clones
@@ -367,9 +368,8 @@ def handoverClones(traj, knot_hts, n_clones=200, seed=0, geometry=True, mc_lines
     acceptable = np.where(delta_chi2 <= DELTA_CHI2_MAX)[0]
     fits = [scan_fits[i] for i in acceptable]
 
-    # The nominal state is that of the fit with jumps, the K of DragFit, unless the jumps do not fit the data,
-    #   then that of the best spread, with the speeds of its flight below the last point
-    i_nominal = 0 if (delta_chi2[0] <= DELTA_CHI2_MAX) else int(np.argmin(delta_chi2))
+    # The nominal state is that of the best spread, with the speeds of its flight below the last point
+    i_nominal = int(np.argmin(delta_chi2))
     nominal_fit = scan_fits[i_nominal]
     nominal = handoverState(nominal_fit, nominal_fit.len_last, *stateAtLength(nominal_fit, \
         nominal_fit.params, nominal_fit.len_last))
@@ -709,13 +709,9 @@ def handoverReport(handover):
     out = []
     out.append("Hand-over at the last point: {:.3f} km, {:.6f}, {:.6f}, radiant azim {:.3f}, elev {:.3f} " \
         "deg".format(nominal['ht']/1000, nominal['lat'], nominal['lon'], nominal['azim'], nominal['elev']))
-    if nominal.get('spread', 0.0) == 0:
-        out.append("Nominal (jumps): K = {:.3e} m^2/kg, speed relative to the ground {:.1f} m/s".format( \
-            nominal['k'], nominal['vel']))
-    else:
-        out.append("Nominal (best spread, {:.2f} km, as the jumps do not fit the data): K = {:.3e} m^2/kg, "
-            "speed relative to the ground {:.1f} m/s".format(nominal['spread']/1000, nominal['k'], \
-            nominal['vel']))
+    out.append("Nominal (best spread, {:.2f} km): K = {:.3e} m^2/kg, speed relative to the ground {:.1f} " \
+        "m/s".format(nominal.get('spread', 0.0)/1000, nominal['k'], nominal['vel']))
+    out.append("Jumps: K = {:.3e} m^2/kg, Delta chi2 {:.2f}".format(scan['k_last'][0], scan['delta_chi2'][0]))
     acceptable = [spread for spread, d_chi2 in zip(scan['spreads'], scan['delta_chi2']) \
         if d_chi2 <= DELTA_CHI2_MAX]
     out.append("Acceptable spreads: {:s} km".format(", ".join("{:.2f}".format(s/1000) for s in acceptable)))
@@ -993,7 +989,9 @@ def summarizeFalls(out_dir, handover):
         points = ax.scatter(column(falls, 'cross_km'), column(falls, 'along_km'), \
             c=np.log10(column(falls, 'k_m2_kg')), s=6, cmap='viridis', label='Leading body')
         fig.colorbar(points, ax=ax, label='log10 K of the leading body (m$^2$/kg)')
-    ax.plot(0, 0, 'r*', ms=14, label='Nominal')
+        ax.plot(np.median(column(falls, 'cross_km')), np.median(column(falls, 'along_km')), 'kX', ms=11, \
+            label='Median of the leading body')
+    ax.plot(0, 0, 'r*', ms=14, label='Nominal (best spread)')
     ax.set_xlabel('Across the motion, right (km)')
     ax.set_ylabel('Along the motion, downrange (km)')
     ax.set_aspect('equal', adjustable='datalim')
@@ -1031,6 +1029,8 @@ def summarizeFalls(out_dir, handover):
             if k_label:
                 out.append("    {:s}: ".format(k_label) + pct_text(column(rows, 'k_m2_kg'), "{:.3e}"))
             out.append("    mass for K (kg): " + pct_text(column(rows, 'mass_kg'), "{:.3g}"))
+            out.append("    median fall: {:.6f}, {:.6f}".format(np.median(column(rows, 'lat_deg')), \
+                np.median(column(rows, 'lon_deg'))))
 
         # Say which runs are missing or only have their nominal fall
         if n_out or n_bad:
